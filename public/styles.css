@@ -67,7 +67,7 @@ kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line)
 .results-heading h2 { font: 11px var(--mono); letter-spacing: .085em; margin: 0; }
 #result-count { font: 10px var(--mono); color: var(--muted); }
 .results { display: grid; }
-.result { width: 100%; text-align: left; padding: 23px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.result { width: 100%; min-width: 0; text-align: left; padding: 23px clamp(12px, 2vw, 24px); background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
 .result:hover { background: var(--surface); }
 .result:hover h3 { color: var(--accent); }
 .result-meta { display: flex; flex-wrap: wrap; gap: 11px; align-items: center; font: 10px var(--mono); color: var(--muted); }

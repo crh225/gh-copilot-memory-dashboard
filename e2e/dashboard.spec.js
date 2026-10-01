@@ -1,5 +1,31 @@
 import { test, expect } from "@playwright/test";
 
+test("result hover backgrounds leave room around content without shifting or overflowing", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Search memory").fill("Implementation notes");
+  await page.getByRole("button", { name: /^Search/ }).click();
+  const card = page.locator(".result").first();
+  await expect(card.locator(".excerpt code.language-javascript")).toBeVisible();
+  for (const theme of ["light", "dark"]) {
+    if (theme === "dark") await page.getByRole("button", { name: "Switch to dark mode" }).click();
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await card.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      const bounds = await card.boundingBox();
+      const title = await card.locator(".result-title").boundingBox();
+      const bottom = await card.locator(".result-bottom").boundingBox();
+      expect(title.x - bounds.x).toBeGreaterThanOrEqual(12);
+      expect(bounds.x + bounds.width - bottom.x - bottom.width).toBeGreaterThanOrEqual(12);
+      await card.hover();
+      await expect(card).toHaveCSS("background-color", theme === "light" ? "rgb(255, 255, 255)" : "rgb(23, 27, 36)");
+      expect(await card.boundingBox()).toEqual(bounds);
+      expect(await card.locator(".result-title").boundingBox()).toEqual(title);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  }
+});
+
 test("paper-and-ink archive searches, filters, inspects context, and stays local", async ({ page }, testInfo) => {
   const outside = [];
   const errors = [];
