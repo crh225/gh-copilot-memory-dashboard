@@ -328,13 +328,13 @@ async function openSession(result) {
     panel.hidden = true;
     $("session-pages").append(panel);
     documents.set(id, { panel, title: result.summary || "Untitled session", result,
-      query: currentSearch.get("q") || "", version: 0, scroll: 0, params: null });
+      query: result.query ?? currentSearch.get("q") ?? "", version: 0, scroll: 0, params: null });
   }
   const doc = documents.get(id);
   const previousResult = doc.result;
   const previousQuery = doc.query;
   doc.result = result;
-  doc.query = currentSearch.get("q") || "";
+  doc.query = result.query ?? currentSearch.get("q") ?? "";
   const params = new URLSearchParams({ id: result.session_id });
   if (result.turn_index !== null && result.turn_index !== undefined) params.set("turn", result.turn_index);
   navigate("explorer", id);

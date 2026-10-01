@@ -1,4 +1,4 @@
-import { $, node, api, requestJson, section, format } from "./ui.js";
+import { $, node, api, requestJson, section, format, date } from "./ui.js";
 
 function write(path, body, options) {
   return requestJson(path, { body, ...options });
@@ -55,15 +55,36 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     control.addEventListener("click", attempt(action, manageDisabled));
     return control;
   };
-  const linkSources = sources => {
-    const group = section("ORIGINAL SOURCES");
+  const sourceLink = (source, label) => {
+    const link = node("a", "source-link", label);
+    const params = new URLSearchParams({ session: source.session_id });
+    if (source.turn_index !== null && source.turn_index !== undefined) params.set("turn", source.turn_index);
+    if (source.kind === "checkpoint") params.set("checkpoint", source.source_id);
+    link.href = `/#${params}`;
+    link.addEventListener("click", event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      attempt(() => openSession({
+        ...source, kind: source.kind || "summary", turn_index: source.turn_index ?? null,
+        query: source.matched_terms?.join(" ") || "",
+      }))(event);
+    });
+    return link;
+  };
+  const linkSources = (sources, retrieval, cited) => {
+    const group = section("MATCHING SESSIONS");
+    group.classList.add("history-matches");
+    if (Number.isSafeInteger(retrieval?.matchedSessions)) {
+      group.append(node("p", "session-meta",
+        `Showing ${sources.length} of ${format.format(retrieval.matchedSessions)} matching indexed sessions. ` +
+        (retrieval.semanticFallback ? "Semantic suggestions only; no literal topic mentions matched." : "Topic mentions are not proof of an implementation or saved credentials.")));
+    }
     for (const source of sources) {
       const row = node("div", "source-list");
-      const link = button(source.summary || source.session_id, () => openSession({
-        ...source, kind: source.kind || "summary", turn_index: source.turn_index ?? null,
-      }));
-      link.classList.add("source-link");
-      row.append(node("span", "session-meta", `[${source.id}] / ${source.kind} / `), link);
+      row.append(sourceLink(source, source.summary || source.session_id),
+        node("p", "session-meta", `[${source.id}] / ${source.kind}${cited.has(source.id) ? " / Cited in answer" : " / Search match (not cited)"}${source.repository ? ` / ${source.repository}` : ""}${source.date ? ` / ${date(source.date)}` : ""}`),
+        sourceLink(source, source.turn_index !== null && source.turn_index !== undefined
+          ? `Open session at turn ${source.turn_index} ->` : source.kind === "checkpoint" ? "Open saved checkpoint ->" : "Open session ->"));
       if (source.excerpt) {
         const details = node("details");
         details.append(node("summary", "", "Read the cited excerpt"), node("p", "source-excerpt", source.excerpt));
@@ -187,6 +208,8 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
           throw new Error("The local server returned an incomplete history answer. No answer was accepted; retry or check the local server log.");
         }
         answer.replaceChildren();
+        answer.append(linkSources(result.matches || result.citations, result.retrieval,
+          new Set(result.citations.map(source => source.id))));
         if (responseMode === "decision") {
           const decision = result.decision;
           const labels = { yes: "Evidence favors yes", no: "Evidence favors no",
@@ -200,14 +223,19 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
           if (result.claims?.length) {
             for (const claim of result.claims) {
               const item = node("article", "evidence-claim");
+              const references = node("p", "session-meta", "Cited sources: ");
+              for (const id of claim.source_ids) {
+                const source = result.citations.find(citation => citation.id === id);
+                if (!source) throw new Error("The local answer references an unavailable source.");
+                references.append(sourceLink(source, `[${id}]`), document.createTextNode(" "));
+              }
               item.append(claim.text_html ? markdownBody(claim.text_html, "") : node("p", "claim-text", claim.text),
-                node("p", "session-meta", `Cited sources: ${claim.source_ids.map(id => `[${id}]`).join(" ")}`),
-                evidenceCheck(claim.evidence));
+                references, evidenceCheck(claim.evidence));
               answer.append(item);
             }
           } else answer.append(markdownBody(result.answer_html, ""), evidenceCheck(result.evidence));
         }
-        answer.append(node("p", "session-meta", result.notice), linkSources(result.citations || []));
+        answer.append(node("p", "session-meta", result.notice));
       } catch (problem) { if (current === requestVersion) answer.replaceChildren(); throw problem; }
       finally { if (current === requestVersion) { activeRequest = null; setAsking(false); } }
     }));

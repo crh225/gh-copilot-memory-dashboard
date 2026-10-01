@@ -264,6 +264,13 @@ chat or embedding model. The app discovers installed decision-capable models
 instead of hardcoding an account's model name. Use an Ollama version that supports
 this endpoint. Chat and decision inference can use separate local endpoints.
 
+Matching sessions appear before the AI explanation, including matches the model
+did not cite. Session titles, explicit **Open session at turn ...** links, and
+inline citation labels are clickable; links also support opening a new tab.
+Opening a match jumps to its recorded turn or checkpoint and highlights its topic.
+Counts describe verified indexed topic mentions, not proof of saved credentials
+or completed work. Excerpts remain collapsed until requested.
+
 Answers render Markdown and code blocks. Source links open the original session;
 returning to Ask History preserves the question and answer during the current
 visit. Questions can contain multiple sentences or paragraphs: there is no
@@ -271,7 +278,15 @@ visit. Questions can contain multiple sentences or paragraphs: there is no
 decision model, subject to explicit context/token-budget checks. Retrieval embeds
 the entire question; if it exceeds the embedding model's input budget, bounded
 Unicode-safe segments are combined as a length-weighted mean. Longer questions
-use semantic ranking rather than requiring every question word to match literally.
+use full-question embeddings alongside topic matching, not literal matching of
+question scaffolding such as "do I have any sessions with". English topic terms
+normalize simple plurals, so "sessions with passwords" finds mentions of
+"password". When verified topic mentions exist, unrelated semantic-only hits
+are excluded and the matching passage is used. With no topic mentions, results
+are explicitly labeled semantic suggestions, never proof of archive-wide absence.
+The full question is still passed unchanged to inference. Chat and Plumb receive
+the recorded session titles alongside excerpts so session-identifying claims can
+be assessed against the same metadata and evidence.
 Questions that cannot fit with evidence produce a visible context-size error;
 they are never silently shortened. Explorer's short-search limits remain unchanged.
 

@@ -150,11 +150,40 @@ test("answers render Markdown and per-claim evidence, and survive inspecting the
   await expect(page.locator(".answer-content")).toContainText("not proof of correctness");
   await page.getByText("Read the cited excerpt", { exact: true }).click();
   await expect(page.locator(".source-excerpt")).toHaveText(citation.excerpt);
-  await page.locator(".answer-content").getByRole("button", { name: "Cache source", exact: true }).click();
+  await page.locator(".answer-content").getByRole("link", { name: "Cache source", exact: true }).click();
   await expect(page.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeVisible();
   await page.getByRole("link", { name: "Ask History", exact: true }).click();
   await expect(page.locator(".claim-check")).toHaveCount(2);
   await expect(page.getByLabel("Question", { exact: true })).toHaveValue("How should cache invalidation work?");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("matching sessions and inline citations are real links that open the exact turn and remain usable in new tabs", async ({ page }) => {
+  const extra = { ...citation, id: "S2", session_id: "demo-layout", source_id: "13",
+    summary: "Uncited matching session", matched_terms: ["archive"] };
+  await page.route("**/api/ask", route => route.fulfill({ json: {
+    ...checkedAnswer, matches: [{ ...citation, matched_terms: ["cache"] }, extra],
+    retrieval: { matchedSessions: 7, matchedEntries: 15, semanticFallback: false },
+  } }));
+  await page.goto("/workbench");
+  await page.getByLabel("Question", { exact: true }).fill("Find my sessions discussing cache");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".history-matches")).toContainText("Showing 2 of 7");
+  const inline = page.locator(".evidence-claim").first().getByRole("link", { name: "[S1]", exact: true });
+  await expect(inline).toHaveAttribute("href", "/#session=demo-cache&turn=0");
+  await inline.click();
+  await expect(page.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeInViewport();
+  await page.getByRole("link", { name: "Ask History", exact: true }).click();
+  const uncited = page.getByRole("link", { name: "Uncited matching session", exact: true });
+  await expect(uncited).toHaveAttribute("href", "/#session=demo-layout&turn=0");
+  const fresh = await page.context().newPage();
+  await fresh.goto(await uncited.evaluate(link => link.href));
+  await expect(fresh.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeVisible();
+  await fresh.close();
+  await uncited.click();
+  await expect(page.locator('.session-page:not([hidden]) [data-turn="0"] mark').first()).toHaveText(/archive/i);
+  await page.getByRole("link", { name: "Ask History", exact: true }).click();
+  await expect(page.locator(".claim-check")).toHaveCount(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 

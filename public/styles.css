@@ -209,7 +209,8 @@ summary { cursor: pointer; color: var(--violet); font-size: 13px; }
 .power-field { display: flex; flex-direction: column; min-width: 0; gap: 8px; color: var(--muted); font: 11px/1.5 var(--mono); }
 .power-field input, .power-field select, .power-field textarea, .document-picker select { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 13px/1.6 var(--sans); }
 .power-field textarea { resize: vertical; }
-.source-link { background: transparent; border: 0; padding: 4px 0; color: var(--accent); text-align: left; overflow-wrap: anywhere; }
+.source-link { background: transparent; border: 0; padding: 4px 0; color: var(--accent); text-align: left; overflow-wrap: anywhere; text-decoration: underline; text-underline-offset: 3px; }
+.source-link:hover { text-decoration-thickness: 2px; }
 .source-list { display: grid; gap: 12px; min-width: 0; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .source-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 var(--sans); }
 .model-choice { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }

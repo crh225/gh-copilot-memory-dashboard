@@ -191,6 +191,29 @@ test("thinking-capable chat models produce bounded cited answers without consumi
   assert.equal(f.calls.filter(call => call.path === "/api/chat").length, before + 1);
 });
 
+test("natural session discovery finds singular topic mentions and returns the matching passage, not unrelated semantic hits", async t => {
+  const f = await fixture(t);
+  f.write(`UPDATE turns SET assistant_response='${"Cache implementation notes. ".repeat(40)} Password handling uses interactive prompts; no credential value is recorded.' WHERE id=1;
+    UPDATE turns SET user_message='Review password handling in the configuration.' WHERE id=13;`);
+  await f.configure();
+  await index(f.ai);
+  f.behavior.answer = JSON.stringify({ claims: [{ text: "A session discusses password handling.", source_ids: ["S1"] }] });
+  const question = "do I have any sessions with passwords?";
+  const result = await f.ai.ask({ question });
+  assert.deepEqual(result.retrieval.terms, ["password"]);
+  assert.equal(result.retrieval.semanticFallback, false);
+  assert.equal(result.retrieval.matchedSessions, 2);
+  assert.equal(result.retrieval.matchedEntries, 2);
+  assert.ok(result.matches.every(source => /password/i.test(source.excerpt)));
+  assert.ok(result.matches.some(source => source.session_id === "demo-cache"), "literal topic mention survives low semantic similarity");
+  assert.ok(result.matches.every(source => source.matched_terms.includes("password")));
+  const prompt = JSON.parse(f.calls.find(call => call.path === "/api/chat").body.messages[1].content);
+  assert.equal(prompt.question, question);
+  assert.ok(prompt.sources.every(source => source.session && /password/i.test(source.excerpt)));
+  assert.equal(result.citations.length, 1);
+  assert.ok(result.matches.length > result.citations.length, "uncited matching context remains available to explore");
+});
+
 test("decision settings migrate legacy index identities and persist without re-embedding", async t => {
   const f = await fixture(t);
   assert.equal(f.ai.settings().decisionEndpoint, f.endpoint);
@@ -287,7 +310,9 @@ test("standalone nouls work with blank chat and separate Ollama decision endpoin
   const check = f.calls.find(c => c.path === "/v1/systemone");
   assert.equal(check.body.questions.yes.type, "noul");
   assert.deepEqual(Object.keys(check.body.questions.availability.criteria), ["supportsYes", "supportsNo", "insufficient"]);
-  assert.deepEqual(JSON.parse(check.body.state).sources, result.citations.map(c => ({ label: c.id, excerpt: c.excerpt })));
+  assert.deepEqual(JSON.parse(check.body.state).sources, result.citations.map(c => ({
+    label: c.id, session: c.summary, kind: c.kind, excerpt: c.excerpt,
+  })));
 });
 
 test("choice distributions distinguish yes, no, insufficient and ties without renormalizing nouls", async t => {
@@ -660,6 +685,8 @@ test("Ollama ask is bounded, citation-backed, sanitized and rejects invented/abs
   assert.deepEqual(answer.citations[0], {
     id: "S1", session_id: "demo-cache", turn_index: 0, kind: "user", source_id: "1",
     summary: "A cache that knows when to let go.", excerpt: "Design a cache invalidation strategy for the widget API.",
+    repository: "example/widget-api", date: "2026-01-20 10:00:00", match_count: 1,
+    matched_terms: ["cache", "invalidation"],
   });
   assert.match(answer.notice, /synthesis\/inference/i);
   const chat = f.calls.find(c => c.path === "/api/chat");
@@ -867,7 +894,7 @@ test("natural-language answers accept more than twelve words and two hundred cha
   const calls = f.calls.slice(start);
   assert.equal(calls.find(call => call.path === "/api/embed").body.input, question);
   assert.equal(JSON.parse(calls.find(call => call.path === "/api/chat").body.messages[1].content).question, question);
-  assert.equal(result.retrieval.mode, "semantic");
+  assert.equal(result.retrieval.mode, "hybrid");
   assert.equal(result.retrieval.querySegments, 1);
   assert.equal(calls.find(call => call.path === "/api/chat").body.options.num_ctx, 8192);
   assert.ok(result.citations.length);
