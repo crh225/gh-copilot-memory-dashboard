@@ -240,6 +240,18 @@ visible beside each claim. Unsupported claims are flagged, not silently removed.
 Without a decision model, evidence is explicitly **Unchecked**. A configured
 decision-model failure produces an error, not an unchecked-success fallback.
 
+Submitting a question immediately shows **Searching history...** and a
+**Cancel request** button. Requests have a three-minute browser deadline;
+timeouts, model failures, and invalid answers appear in a visible error message,
+preserving the question for retry. Cancellation also stops the server's retrieval
+and outstanding model requests. Explorer searches have a one-minute deadline.
+Retrieval reuses read-only connections and prepared statements while still
+verifying every matching source's current metadata and content hash.
+For Ollama chat models that advertise thinking support, citation generation uses
+`think: false` so reasoning cannot consume the bounded answer budget. Plumb
+evidence checks remain separate. Output-budget exhaustion is reported explicitly,
+never accepted as an empty answer.
+
 **Decision / probability of yes** uses the decision model directly, without
 calling the chat model. It returns a **noul**, the model's probability of yes
 based on the retrieved evidence, with a separate yes/no/insufficient-evidence

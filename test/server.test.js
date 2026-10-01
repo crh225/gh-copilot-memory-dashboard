@@ -3,15 +3,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { request } from "node:http";
+import { request, createServer } from "node:http";
+import { setTimeout as sleep } from "node:timers/promises";
 import { createDemo } from "../lib/demo-data.js";
 import { createApp } from "../server.js";
 
-async function app(t, missing = false) {
+async function app(t, missing = false, aiEndpoint) {
   const directory = mkdtempSync(join(tmpdir(), "memory-http-"));
   const path = join(directory, "test.db");
   if (!missing) createDemo(path);
-  const server = createApp({ path, dataPath: join(directory, "state") });
+  const server = createApp({ path, dataPath: join(directory, "state"), aiEndpoint });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
@@ -19,6 +20,50 @@ async function app(t, missing = false) {
   });
   return `http://127.0.0.1:${server.address().port}`;
 }
+
+test("disconnecting a history request aborts outstanding local model inference", async t => {
+  let started;
+  let stopped;
+  const received = new Promise(resolve => { started = resolve; });
+  const disconnected = new Promise(resolve => { stopped = resolve; });
+  const backend = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = text ? JSON.parse(text) : undefined;
+    const respond = result => res.end(JSON.stringify(result));
+    if (req.url === "/api/tags") return respond({ models: [{ name: "synthetic-embed", digest: "v1" }] });
+    if (req.url === "/api/show") return respond({ capabilities: ["embedding"],
+      model_info: { "synthetic.context_length": 2048 } });
+    if (req.url === "/api/embed" && body.input === "api") {
+      res.once("close", () => stopped(true));
+      started();
+      return;
+    }
+    if (req.url === "/api/embed") return respond({ embeddings: [[1, 0, 0]] });
+    res.writeHead(404); res.end();
+  });
+  await new Promise(resolve => backend.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => backend.close(resolve)));
+  const url = await app(t, false, `http://127.0.0.1:${backend.address().port}`);
+  const write = (path, body) => fetch(`${url}${path}`, { method: "POST",
+    headers: { "Content-Type": "application/json", "X-Copilot-Memory": "local" }, body: JSON.stringify(body) });
+  assert.equal((await write("/api/settings", { embeddingModel: "synthetic-embed" })).status, 200);
+  assert.equal((await write("/api/index", {})).status, 200);
+  let status;
+  for (let i = 0; i < 200; i++) {
+    status = await (await fetch(`${url}/api/index`)).json();
+    if (!status.running) break;
+    await sleep(10);
+  }
+  assert.equal(status.state, "complete");
+  const controller = new AbortController();
+  const pending = fetch(`${url}/api/hybrid-search?q=api`, { signal: controller.signal });
+  assert.equal(await Promise.race([received.then(() => true), sleep(3000).then(() => false)]), true);
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(await Promise.race([disconnected, sleep(3000).then(() => false)]), true);
+  assert.equal((await fetch(`${url}/api/health`)).status, 200);
+});
 
 test("HTTP serves local assets and read-only API with private-response headers", async t => {
   const url = await app(t);

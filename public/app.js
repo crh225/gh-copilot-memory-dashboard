@@ -5,6 +5,7 @@ import { createWorkbench } from "./workbench.js";
 const labels = { summary: "SUMMARY", user: "YOUR PROMPT", assistant: "COPILOT", checkpoint: "CHECKPOINT" };
 let searchOffset = 0;
 let searchVersion = 0;
+let searchController;
 let currentSearch = new URLSearchParams();
 const documents = new Map();
 let activeDocument = "explorer";
@@ -49,6 +50,9 @@ async function loadOverview() {
 
 async function runSearch({ reset = true } = {}) {
   const version = ++searchVersion;
+  searchController?.abort();
+  const controller = new AbortController();
+  searchController = controller;
   if (reset) {
     searchOffset = 0;
     currentSearch = new URLSearchParams(new FormData($("search-form")));
@@ -65,7 +69,8 @@ async function runSearch({ reset = true } = {}) {
   $("previous").disabled = true;
   $("next").disabled = true;
   try {
-    const data = await api(params.get("retrieval") === "hybrid" ? "/api/hybrid-search" : "/api/search", params);
+    const data = await api(params.get("retrieval") === "hybrid" ? "/api/hybrid-search" : "/api/search", params,
+      { signal: controller.signal, label: "History search" });
     if (version !== searchVersion) return;
     $("results").replaceChildren();
     $("search-notice").textContent = data.retrieval?.notice || data.notice || "";
@@ -118,12 +123,14 @@ async function runSearch({ reset = true } = {}) {
     if (version !== searchVersion) return;
     $("error").textContent = error.message;
     $("error").hidden = false;
+    $("error").scrollIntoView({ block: "nearest" });
     $("results").replaceChildren();
     $("pagination").hidden = true;
     $("result-count").textContent = "Archive unavailable";
     $("connection").textContent = "CONNECTION ERROR";
   } finally {
     if (version === searchVersion) {
+      searchController = null;
       $("results").setAttribute("aria-busy", "false");
       $("results").inert = false;
     }

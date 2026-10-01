@@ -23,7 +23,7 @@ async function fixture(t, provider = "ollama") {
   const behavior = { failure: false, badVector: false, answer: "Synthesis: invalidate after successful writes [S1].",
     answers: [], delay: 0, failAt: Infinity, digest: "synthetic-weight-v1", redirect: false, onChat: null,
     onDecision: null, onEmbed: null, decisionFailure: false, decisionResponse: null, unknownDecision: false,
-    chatContext: 2048 };
+    chatContext: 2048, chatThinking: false, exhausted: false };
   let embeddings = 0;
   const server = createServer(async (req, res) => {
     let text = "";
@@ -41,7 +41,8 @@ async function fixture(t, provider = "ollama") {
     ] });
     if (req.url === "/api/show") return respond({
       capabilities: body.model === "synthetic-plumb:latest" && behavior.unknownDecision ? [] :
-        body.model === "nomic-embed-text:latest" ? ["embedding"] : ["completion"],
+        body.model === "nomic-embed-text:latest" ? ["embedding"] :
+          body.model === "qwen2.5:3b" && behavior.chatThinking ? ["completion", "thinking"] : ["completion"],
       details: body.model === "synthetic-plumb:latest" && !behavior.unknownDecision ? { parent_model: "plumb-4b-synthetic.gguf" } : {},
       model_info: { "bert.context_length": body.model === "synthetic-plumb:latest" ? 32768 :
         body.model === "nomic-embed-text:latest" ? 2048 : behavior.chatContext },
@@ -63,6 +64,9 @@ async function fixture(t, provider = "ollama") {
     }
     if (["/api/chat", "/v1/chat/completions"].includes(req.url)) {
       behavior.onChat?.();
+      if (behavior.exhausted || (behavior.chatThinking && body.think !== false)) {
+        return respond({ message: { content: "", thinking: "Synthetic reasoning used the budget." }, done_reason: "length" });
+      }
       const content = behavior.answers.length ? behavior.answers.shift() : behavior.answer;
       return respond(req.url === "/api/chat" ? { message: { content } } :
         { choices: [{ message: { content } }] });
@@ -115,6 +119,77 @@ async function index(ai, body = {}) {
   assert.equal(status.state, "complete", JSON.stringify(status));
   return status;
 }
+
+test("verified retrieval caches source statements and retains exact matching counts", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  const before = readFileSync(f.sourcePath);
+  const prepared = [];
+  const original = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, "prepare", function(sql) {
+    prepared.push(sql);
+    return original.call(this, sql);
+  });
+  const result = await f.ai.hybridSearch(new URLSearchParams({ q: "cache", limit: "50" }));
+  assert.ok(result.totalEntries > result.results.length);
+  assert.equal(result.results.reduce((sum, row) => sum + row.match_count, 0), result.totalEntries);
+  assert.equal(prepared.filter(sql => sql === "PRAGMA table_info(sessions)").length, 1);
+  assert.equal(prepared.filter(sql => sql.startsWith("SELECT substr(")).length, 4);
+  assert.deepEqual(readFileSync(f.sourcePath), before);
+});
+
+test("cancelling during source verification closes the connection and permits retry", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  const controller = new AbortController();
+  let connection;
+  const original = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, "prepare", function(sql) {
+    if (!connection && sql.startsWith("SELECT substr(")) {
+      connection = this;
+      setImmediate(() => controller.abort());
+    }
+    return original.call(this, sql);
+  });
+  await assert.rejects(f.ai.hybridSearch(new URLSearchParams({ q: "cache" }),
+    { signal: controller.signal }), { code: "REQUEST_CANCELLED" });
+  assert.throws(() => connection.prepare("SELECT 1"), /not open|closed/i);
+  assert.ok((await f.ai.hybridSearch(new URLSearchParams({ q: "cache" }))).totalEntries > 0);
+  assert.equal(f.ai.indexStatus().state, "complete");
+});
+
+for (const phase of ["embedding", "chat", "decision"]) {
+  test(`cancelling ${phase} inference is explicit and a subsequent answer still works`, async t => {
+    const f = await fixture(t);
+    await f.configure({ decisionModel: "synthetic-plumb:latest" });
+    await index(f.ai);
+    const controller = new AbortController();
+    const hook = { embedding: "onEmbed", chat: "onChat", decision: "onDecision" }[phase];
+    f.behavior[hook] = () => controller.abort();
+    await assert.rejects(f.ai.ask({ question: "cache" }, { signal: controller.signal }),
+      { code: "REQUEST_CANCELLED" });
+    f.behavior[hook] = null;
+    assert.ok((await f.ai.ask({ question: "cache" })).citations.length > 0);
+  });
+}
+
+test("thinking-capable chat models produce bounded cited answers without consuming tokens on reasoning", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  const identity = f.ai.indexStatus().identity;
+  f.behavior.chatThinking = true;
+  const result = await f.ai.ask({ question: "cache" });
+  assert.ok(result.citations.length > 0);
+  assert.equal(f.calls.find(call => call.path === "/api/chat").body.think, false);
+  assert.equal(f.ai.indexStatus().identity, identity);
+  f.behavior.exhausted = true;
+  const before = f.calls.filter(call => call.path === "/api/chat").length;
+  await assert.rejects(f.ai.ask({ question: "cache" }), { code: "MODEL_OUTPUT_LIMIT" });
+  assert.equal(f.calls.filter(call => call.path === "/api/chat").length, before + 1);
+});
 
 test("decision settings migrate legacy index identities and persist without re-embedding", async t => {
   const f = await fixture(t);

@@ -1,12 +1,7 @@
-import { $, node, api, section, format } from "./ui.js";
+import { $, node, api, requestJson, section, format } from "./ui.js";
 
-async function write(path, body) {
-  const response = await fetch(path, { method: "POST", headers: {
-    "Content-Type": "application/json", "X-Copilot-Memory": "local",
-  }, body: JSON.stringify(body) });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Local request failed (${response.status}).`);
-  return data;
+function write(path, body, options) {
+  return requestJson(path, { body, ...options });
 }
 
 function field(label, control) {
@@ -44,6 +39,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     console.warn("Ask History failed:", problem.name);
     $("workbench-error").textContent = problem.message;
     $("workbench-error").hidden = false;
+    if (!$("workbench-page").hidden) $("workbench-error").scrollIntoView({ block: "nearest" });
   };
   const attempt = (action, manageDisabled = true) => async event => {
     const control = event?.currentTarget;
@@ -122,6 +118,21 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     submit.disabled = true;
     let indexReady = false;
     let asking = false;
+    let activeRequest;
+    const cancelRequest = node("button", "", "Cancel request");
+    cancelRequest.type = "button";
+    cancelRequest.hidden = true;
+    cancelRequest.addEventListener("click", () => activeRequest?.abort());
+    const setAsking = value => {
+      asking = value;
+      submit.disabled = value || !indexReady;
+      submit.textContent = value ? "Searching history..." : "Ask history";
+      cancelRequest.hidden = !value;
+      question.readOnly = value;
+      repository.readOnly = value;
+      mode.disabled = value;
+      form.setAttribute("aria-busy", String(value));
+    };
     const readiness = node("p", "session-meta index-readiness", "Checking history index...");
     readiness.setAttribute("role", "status");
     const meter = node("progress", "index-progress");
@@ -150,20 +161,31 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
       if (state.running && !document.hidden && !$("workbench-page").hidden) timer = setTimeout(() => refreshIndex().catch(error), 2000);
     };
     refreshReadiness = refreshIndex;
+    const requestActions = node("div", "tool-actions");
+    requestActions.append(submit, cancelRequest);
     form.append(field("Question", question),
-      field("Repository (optional exact name)", repository), field("Response mode", mode), modeHint, submit);
+      field("Repository (optional exact name)", repository), field("Response mode", mode), modeHint, requestActions);
     const answer = node("div", "answer-content");
     form.addEventListener("submit", attempt(async event => {
       event.preventDefault();
+      if (asking) return;
       const current = ++requestVersion;
-      asking = true;
-      submit.disabled = true;
-      answer.replaceChildren(node("p", "session-meta", "Retrieving history and evaluating the evidence locally..."));
+      activeRequest = new AbortController();
+      setAsking(true);
+      const pending = node("p", "session-meta", "Retrieving history, then asking your local models. You can cancel this request.");
+      pending.setAttribute("role", "status");
+      answer.replaceChildren(pending);
+      pending.scrollIntoView({ block: "nearest" });
       try {
         const responseMode = mode.value;
         const result = await write(responseMode === "decision" ? "/api/decision" : "/api/ask",
-          { question: question.value, repository: repository.value });
+          { question: question.value, repository: repository.value },
+          { signal: activeRequest.signal, timeoutMs: 180000, label: "Ask History" });
         if (current !== requestVersion) return;
+        if (!result || !Array.isArray(result.citations) || !result.citations.length ||
+            (responseMode === "answer" ? typeof result.answer_html !== "string" || !result.answer_html.trim() : !result.decision)) {
+          throw new Error("The local server returned an incomplete history answer. No answer was accepted; retry or check the local server log.");
+        }
         answer.replaceChildren();
         if (responseMode === "decision") {
           const decision = result.decision;
@@ -187,7 +209,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
         }
         answer.append(node("p", "session-meta", result.notice), linkSources(result.citations || []));
       } catch (problem) { if (current === requestVersion) answer.replaceChildren(); throw problem; }
-      finally { if (current === requestVersion) { asking = false; submit.disabled = !indexReady; } }
+      finally { if (current === requestVersion) { activeRequest = null; setAsking(false); } }
     }));
     const configuration = node("details", "ai-configuration");
     configuration.id = "ai-configuration";

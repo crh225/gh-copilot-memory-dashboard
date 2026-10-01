@@ -29,11 +29,41 @@ export function date(value) {
   });
 }
 
-export async function api(path, params) {
-  const response = await fetch(`${path}${params ? `?${params}` : ""}`, { cache: "no-store" });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
-  return data;
+export async function requestJson(path, { body, signal, timeoutMs = 60000, label = "Local request" } = {}) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancel = () => controller.abort();
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    const response = await fetch(path, { cache: "no-store", signal: controller.signal,
+      ...(body === undefined ? {} : { method: "POST", headers: {
+        "Content-Type": "application/json", "X-Copilot-Memory": "local",
+      }, body: JSON.stringify(body) }),
+    });
+    let data;
+    try { data = await response.json(); }
+    catch { throw new Error(`The local server returned unreadable JSON (HTTP ${response.status}). Retry or check the local server log.`); }
+    if (!response.ok) {
+      const error = new Error(typeof data?.error === "string" ? data.error : `Local request failed (HTTP ${response.status}).`);
+      error.code = data?.code;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException(`${label} cancelled.`, "AbortError");
+    if (timedOut) throw new Error(`${label} timed out after ${Math.ceil(timeoutMs / 1000)} seconds. The local server or model did not finish; retry or check your local model server.`);
+    if (error instanceof TypeError) throw new Error("Could not reach the local dashboard. Check that it is running, then retry.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
+export async function api(path, params, options) {
+  return requestJson(`${path}${params ? `?${params}` : ""}`, options);
 }
 
 export function empty(title, description) {

@@ -22,6 +22,61 @@ const checkedAnswer = {
   citations: [citation], notice: "Local AI synthesis. Check the original sources.",
 };
 
+test("api visibly searches, supports cancellation and preserves the question for retry", async ({ page }) => {
+  let calls = 0;
+  await page.route("**/api/ask", route => {
+    calls++;
+    if (calls > 1) return route.fulfill({ json: checkedAnswer });
+  });
+  await page.goto("/workbench");
+  await page.getByLabel("Question", { exact: true }).fill("api");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Searching history..." })).toBeDisabled();
+  await expect(page.locator(".answer-content")).toContainText("Retrieving history");
+  await page.getByRole("button", { name: "Cancel request" }).click();
+  await expect(page.locator("#workbench-error")).toHaveText("Ask History cancelled.");
+  await expect(page.locator("#workbench-error")).toBeInViewport();
+  await expect(page.getByLabel("Question", { exact: true })).toHaveValue("api");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".claim-check")).toHaveCount(2);
+});
+
+test("a history deadline displays an in-view error and allows a successful retry", async ({ page }) => {
+  let calls = 0;
+  await page.route("**/api/ask", route => {
+    calls++;
+    if (calls > 1) return route.fulfill({ json: checkedAnswer });
+  });
+  await page.goto("/workbench");
+  await page.clock.install();
+  await page.getByLabel("Question", { exact: true }).fill("api");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cancel request" })).toBeVisible();
+  await page.clock.fastForward(180001);
+  await expect(page.locator("#workbench-error")).toContainText("timed out after 180 seconds");
+  await expect(page.locator("#workbench-error")).toBeInViewport();
+  await expect(page.getByLabel("Question", { exact: true })).toHaveValue("api");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".claim-check")).toHaveCount(2);
+});
+
+for (const failure of ["network", "json", "incomplete"]) {
+  test(`${failure} failures cannot leave a blank successful history answer`, async ({ page }) => {
+    await page.route("**/api/ask", route => failure === "network" ? route.abort("failed") :
+      failure === "json" ? route.fulfill({ contentType: "application/json", body: "<broken>" }) :
+        route.fulfill({ json: { answer_html: "", citations: [citation] } }));
+    await page.goto("/workbench");
+    await page.getByLabel("Question", { exact: true }).fill("api");
+    await page.getByRole("button", { name: "Ask history", exact: true }).click();
+    await expect(page.locator("#workbench-error")).toContainText({
+      network: "Could not reach the local dashboard", json: "unreadable JSON", incomplete: "incomplete history answer",
+    }[failure]);
+    await expect(page.locator("#workbench-error")).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Ask history", exact: true })).toBeEnabled();
+    await expect(page.locator(".answer-content")).toBeEmpty();
+  });
+}
+
 test("Ask History replaces unused tools and palette entries without disturbing document navigation", async ({ page }) => {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));

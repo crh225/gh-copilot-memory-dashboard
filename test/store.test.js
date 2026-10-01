@@ -15,6 +15,26 @@ function fixture(t) {
   return path;
 }
 
+test("async source reads retain a read-only connection across awaits and close it afterwards", async t => {
+  const path = fixture(t);
+  const before = readFileSync(path);
+  let connection;
+  const count = await withStore(path, async db => {
+    connection = db;
+    await new Promise(resolve => setImmediate(resolve));
+    return db.prepare("SELECT COUNT(*) AS n FROM sessions").get().n;
+  });
+  assert.equal(count, 4);
+  assert.throws(() => connection.prepare("SELECT 1"), /not open|closed/i);
+  await assert.rejects(withStore(path, async db => {
+    connection = db;
+    await new Promise(resolve => setImmediate(resolve));
+    db.exec("DELETE FROM sessions");
+  }), { code: "DATABASE_UNAVAILABLE" });
+  assert.throws(() => connection.prepare("SELECT 1"), /not open|closed/i);
+  assert.deepEqual(readFileSync(path), before);
+});
+
 test("overview identifies the supported local archive", t => {
   withStore(fixture(t), db => {
     assert.deepEqual(overview(db).counts, { sessions: 4, turns: 48, checkpoints: 4, repositories: 3 });

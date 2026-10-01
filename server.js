@@ -28,6 +28,7 @@ const assets = new Map([
 }]));
 
 function respond(res, status, body, type = "application/json; charset=utf-8") {
+  if (res.destroyed || res.writableEnded) return;
   res.writeHead(status, {
     "Content-Type": type,
     "Cache-Control": "no-store",
@@ -83,6 +84,8 @@ export function createApp({ path = databasePath(),
   const notes = () => notebook ||= createNotebook(dataPath, path);
   const ai = () => intelligence ||= createIntelligence({ sourcePath: path, dataPath, endpoint: aiEndpoint });
   const server = createServer(async (req, res) => {
+    const controller = new AbortController();
+    res.once("close", () => { if (!res.writableEnded) controller.abort(); });
     try {
       const host = req.headers.host || "";
       if (!/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host)) {
@@ -104,8 +107,8 @@ export function createApp({ path = databasePath(),
         let result;
         if (url.pathname === "/api/settings") result = await ai().configure(body);
         else if (url.pathname === "/api/index") result = ai().startIndex(body);
-        else if (url.pathname === "/api/ask") result = await ai().ask(body);
-        else if (url.pathname === "/api/decision") result = await ai().decide(body);
+        else if (url.pathname === "/api/ask") result = await ai().ask(body, { signal: controller.signal });
+        else if (url.pathname === "/api/decision") result = await ai().decide(body, { signal: controller.signal });
         else if (url.pathname === "/api/context-pack") result = withStore(path, db => contextPack(db, body));
         else if (url.pathname === "/api/checkpoint-compare") result = withStore(path, db => checkpointComparison(db, body));
         else if (url.pathname === "/api/render-markdown") {
@@ -126,7 +129,7 @@ export function createApp({ path = databasePath(),
       } else if (url.pathname === "/api/index") {
         respond(res, 200, await ai().indexStatus());
       } else if (url.pathname === "/api/hybrid-search") {
-        respond(res, 200, await ai().hybridSearch(url.searchParams));
+        respond(res, 200, await ai().hybridSearch(url.searchParams, { signal: controller.signal }));
       } else if (url.pathname === "/api/notebook") {
         respond(res, 200, notes().list(url.searchParams));
       } else if (noteRoute) {
@@ -153,6 +156,7 @@ export function createApp({ path = databasePath(),
         throw new AppError(404, "NOT_FOUND", "Route not found.");
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       if (error instanceof AppError) {
         respond(res, error.status, { error: error.message, code: error.code });
       } else {
