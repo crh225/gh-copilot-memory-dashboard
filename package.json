@@ -1,0 +1,25 @@
+{
+  "name": "gh-copilot-memory-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A local, read-only search dashboard for GitHub Copilot CLI history.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test test/*.test.js",
+    "test:browser": "playwright test",
+    "check": "node --check server.js && node --check lib/store.js && node --check lib/usage.js && node --check lib/pricing.js && node --check lib/markdown.js && node --check public/app.js && node --check public/dashboard.js && node --check public/ui.js && node --check public/theme.js"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.1.0",
+    "sanitize-html": "^2.17.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  }
+}
