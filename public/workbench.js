@@ -110,9 +110,8 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     const form = node("form", "power-form");
     const question = node("textarea");
     question.name = "question";
-    question.rows = 3;
+    question.rows = 5;
     question.required = true;
-    question.maxLength = 200;
     const repository = input("repository");
     const mode = select("mode", [["answer", "Answer with evidence checks"], ["decision", "Decision / probability of yes"]], "answer");
     const modeHint = node("p", "session-meta", "Decision mode needs a yes/no question. The noul measures whether retrieved evidence establishes yes, not whether the proposition is universally true.");
@@ -151,7 +150,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
       if (state.running && !document.hidden && !$("workbench-page").hidden) timer = setTimeout(() => refreshIndex().catch(error), 2000);
     };
     refreshReadiness = refreshIndex;
-    form.append(field("Question (up to 200 characters / 12 words)", question),
+    form.append(field("Question", question),
       field("Repository (optional exact name)", repository), field("Response mode", mode), modeHint, submit);
     const answer = node("div", "answer-content");
     form.addEventListener("submit", attempt(async event => {

@@ -85,7 +85,7 @@ test("inline configuration discovers role-safe decision models and saves indepen
 test("answers render Markdown and per-claim evidence, and survive inspecting their citations", async ({ page }) => {
   await page.route("**/api/ask", route => route.fulfill({ json: checkedAnswer }));
   await page.goto("/workbench");
-  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("How should cache invalidation work?");
+  await page.getByLabel("Question", { exact: true }).fill("How should cache invalidation work?");
   await page.getByRole("button", { name: "Ask history", exact: true }).click();
   await expect(page.locator(".answer-content .markdown strong")).toHaveText("after writes");
   await expect(page.getByRole("button", { name: "Copy js code" })).toBeVisible();
@@ -99,7 +99,7 @@ test("answers render Markdown and per-claim evidence, and survive inspecting the
   await expect(page.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeVisible();
   await page.getByRole("link", { name: "Ask History", exact: true }).click();
   await expect(page.locator(".claim-check")).toHaveCount(2);
-  await expect(page.getByLabel("Question (up to 200 characters / 12 words)")).toHaveValue("How should cache invalidation work?");
+  await expect(page.getByLabel("Question", { exact: true })).toHaveValue("How should cache invalidation work?");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
@@ -115,7 +115,7 @@ test("decision mode returns a noul with explicit insufficient evidence and never
       citations: [citation], notice: "Only indexed, retrieved excerpts were evaluated." } });
   });
   await page.goto("/workbench");
-  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("Was the cache policy implemented?");
+  await page.getByLabel("Question", { exact: true }).fill("Was the cache policy implemented?");
   await page.getByLabel("Repository (optional exact name)").fill("example/widget-api");
   await page.getByLabel("Response mode").selectOption("decision");
   await page.getByRole("button", { name: "Ask history", exact: true }).click();
@@ -133,7 +133,7 @@ test("decision failures stay explicit and can be retried without a success-shape
     ? { status: 502, json: { error: "The configured decision model is unavailable.", code: "BACKEND_UNAVAILABLE" } }
     : { json: { decision: { noul: 0.9, assessment: "yes" }, citations: [citation], notice: "Model judgment." } }));
   await page.goto("/workbench");
-  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("Are cached reads invalidated after writes?");
+  await page.getByLabel("Question", { exact: true }).fill("Are cached reads invalidated after writes?");
   await page.getByLabel("Response mode").selectOption("decision");
   await page.getByRole("button", { name: "Ask history", exact: true }).click();
   await expect(page.locator("#workbench-error")).toHaveText("The configured decision model is unavailable.");
@@ -152,7 +152,7 @@ test("answers without a decision model explicitly show unchecked evidence", asyn
     citations: [citation], notice: "Citations identify records, not verified truth.",
   } }));
   await page.goto("/workbench");
-  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("What was decided?");
+  await page.getByLabel("Question", { exact: true }).fill("What was decided?");
   await page.getByRole("button", { name: "Ask history", exact: true }).click();
   await expect(page.locator(".answer-content strong").first()).toHaveText("answer");
   await expect(page.locator(".claim-check")).toContainText("Evidence check: Unchecked");
@@ -202,4 +202,28 @@ test("Ask History shows total indexing progress while configuration is closed an
   await expect(page.locator(".index-readiness")).toContainText("1 changed sources were excluded");
   await expect(page.getByRole("button", { name: "Ask history", exact: true })).toBeEnabled();
   await expect(page.getByRole("progressbar", { name: "History indexing progress" })).toBeHidden();
+});
+
+test("both response modes submit full multi-paragraph questions without word or character caps", async ({ page }) => {
+  const received = [];
+  await page.route("**/api/ask", route => {
+    received.push(route.request().postDataJSON().question);
+    return route.fulfill({ json: checkedAnswer });
+  });
+  await page.route("**/api/decision", route => {
+    received.push(route.request().postDataJSON().question);
+    return route.fulfill({ json: { decision: { noul: 0.8, assessment: "yes" },
+      citations: [citation], notice: "Model judgment." } });
+  });
+  await page.goto("/workbench");
+  const question = "Please explain what my history records about cache invalidation after successful writes, the reasoning behind that policy, and its failure boundaries.\n\nCompare the original request with the recorded response and distinguish what was proposed from what was actually implemented.";
+  const input = page.getByLabel("Question", { exact: true });
+  await expect(input).not.toHaveAttribute("maxlength");
+  await input.fill(question);
+  for (const mode of ["answer", "decision"]) {
+    await page.getByLabel("Response mode").selectOption(mode);
+    await page.getByRole("button", { name: "Ask history", exact: true }).click();
+    await expect(page.locator(".answer-content")).toContainText(mode === "answer" ? "after writes" : "Model P(yes): 80.0%");
+  }
+  expect(received).toEqual([question, question]);
 });

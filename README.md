@@ -254,7 +254,16 @@ this endpoint. Chat and decision inference can use separate local endpoints.
 
 Answers render Markdown and code blocks. Source links open the original session;
 returning to Ask History preserves the question and answer during the current
-visit. **Ctrl+K / Cmd+K** opens a searchable command palette for navigation,
+visit. Questions can contain multiple sentences or paragraphs: there is no
+12-word or 200-character question cap. The full question is sent to the chat or
+decision model, subject to explicit context/token-budget checks. Retrieval embeds
+the entire question; if it exceeds the embedding model's input budget, bounded
+Unicode-safe segments are combined as a length-weighted mean. Longer questions
+use semantic ranking rather than requiring every question word to match literally.
+Questions that cannot fit with evidence produce a visible context-size error;
+they are never silently shortened. Explorer's short-search limits remain unchanged.
+
+**Ctrl+K / Cmd+K** opens a searchable command palette for navigation,
 model/index configuration, and currently open documents. Hybrid retrieval remains
 available in Explorer after explicit indexing.
 

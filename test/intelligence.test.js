@@ -22,7 +22,8 @@ async function fixture(t, provider = "ollama") {
   const calls = [];
   const behavior = { failure: false, badVector: false, answer: "Synthesis: invalidate after successful writes [S1].",
     answers: [], delay: 0, failAt: Infinity, digest: "synthetic-weight-v1", redirect: false, onChat: null,
-    onDecision: null, onEmbed: null, decisionFailure: false, decisionResponse: null, unknownDecision: false };
+    onDecision: null, onEmbed: null, decisionFailure: false, decisionResponse: null, unknownDecision: false,
+    chatContext: 2048 };
   let embeddings = 0;
   const server = createServer(async (req, res) => {
     let text = "";
@@ -42,7 +43,8 @@ async function fixture(t, provider = "ollama") {
       capabilities: body.model === "synthetic-plumb:latest" && behavior.unknownDecision ? [] :
         body.model === "nomic-embed-text:latest" ? ["embedding"] : ["completion"],
       details: body.model === "synthetic-plumb:latest" && !behavior.unknownDecision ? { parent_model: "plumb-4b-synthetic.gguf" } : {},
-      model_info: { "bert.context_length": body.model === "synthetic-plumb:latest" ? 32768 : 2048 },
+      model_info: { "bert.context_length": body.model === "synthetic-plumb:latest" ? 32768 :
+        body.model === "nomic-embed-text:latest" ? 2048 : behavior.chatContext },
     });
     if (req.url === "/v1/models") return respond({ data: [
       { id: "nomic-embed-text:latest", capabilities: ["embedding"], context_length: 2048 },
@@ -599,7 +601,7 @@ test("Ollama ask is bounded, citation-backed, sanitized and rejects invented/abs
   f.behavior.answer = "<script>bad()</script> Synthesis [S1]";
   assert.doesNotMatch((await f.ai.ask({ question: "cache invalidation" })).answer_html, /<script>/);
   await assert.rejects(f.ai.ask({ question: "cache", repository: "absent" }), { code: "NO_SOURCES" });
-  await assert.rejects(f.ai.ask({ question: "x".repeat(201) }), { status: 400 });
+  await assert.rejects(f.ai.ask({ question: "x".repeat(12000) }), { code: "MODEL_CONTEXT", status: 409 });
   await assert.rejects(f.ai.ask({ question: "cache", limit: 9 }), { status: 400 });
 });
 
@@ -776,4 +778,87 @@ test("frontend chatModel alias, repository indexing scope, status aliases and as
   assert.equal(full.truncated, false);
   await f.ai.close();
   assert.equal(f.open().settings().chatModel, "qwen2.5:3b");
+});
+
+test("natural-language answers accept more than twelve words and two hundred characters without truncation", async t => {
+  const f = await fixture(t);
+  f.behavior.chatContext = 8192;
+  await f.configure();
+  await index(f.ai);
+  const question = "Please explain how the cache invalidation approach was described in my previous conversations, including the reasons for invalidating after successful writes, the proposed failure boundaries, and the validation steps recorded in that history.";
+  assert.ok(question.length > 200 && question.split(/\s+/).length > 12);
+  const start = f.calls.length;
+  const result = await f.ai.ask({ question });
+  const calls = f.calls.slice(start);
+  assert.equal(calls.find(call => call.path === "/api/embed").body.input, question);
+  assert.equal(JSON.parse(calls.find(call => call.path === "/api/chat").body.messages[1].content).question, question);
+  assert.equal(result.retrieval.mode, "semantic");
+  assert.equal(result.retrieval.querySegments, 1);
+  assert.equal(calls.find(call => call.path === "/api/chat").body.options.num_ctx, 8192);
+  assert.ok(result.citations.length);
+});
+
+for (const provider of ["ollama", "openai"]) {
+  test(`long Unicode questions preserve every character in bounded ${provider} retrieval`, async t => {
+    const f = await fixture(t, provider);
+    f.behavior.chatContext = 8192;
+    await f.configure({ embeddingContext: 512 });
+    await index(f.ai);
+    const question = "Explain cache invalidation after writes 🧠 using recorded reasoning and failure boundaries. ".repeat(15).trim();
+    const start = f.calls.length;
+    const result = await f.ai.ask({ question });
+    const calls = f.calls.slice(start);
+    const embeddings = calls.filter(call => ["/api/embed", "/v1/embeddings"].includes(call.path));
+    assert.ok(embeddings.length > 1);
+    assert.equal(embeddings.map(call => call.body.input).join(""), question);
+    assert.ok(embeddings.every(call => Buffer.byteLength(call.body.input) <= 384 &&
+      (call.path === "/api/embed" ? call.body.truncate === false : call.body.encoding_format === "float")));
+    assert.equal(result.retrieval.querySegments, embeddings.length);
+    assert.equal(JSON.parse(calls.find(call => ["/api/chat", "/v1/chat/completions"].includes(call.path)).body.messages[1].content).question, question);
+    assert.ok(result.citations.length);
+  });
+}
+
+test("decision mode accepts full multi-sentence questions without invoking chat", async t => {
+  const f = await fixture(t);
+  await f.configure({ completionModel: "", decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  const question = "The cache design was intended to invalidate resource keys after successful writes and keep cache failures separate from API failures. Considering only the recorded evidence, was that policy requested or established in the original conversation?";
+  const start = f.calls.length;
+  const result = await f.ai.decide({ question });
+  const calls = f.calls.slice(start);
+  assert.equal(calls.filter(call => call.path === "/api/chat").length, 0);
+  const decision = calls.find(call => call.path === "/v1/systemone").body;
+  assert.ok(decision.questions.yes.instructions.includes(JSON.stringify(question)));
+  assert.ok(decision.questions.availability.instructions.includes(JSON.stringify(question)));
+  assert.equal(result.decision.state, "checked");
+  assert.ok(result.citations.length);
+});
+
+test("over-context questions fail before retrieval or inference, not at an arbitrary word limit", async t => {
+  const f = await fixture(t);
+  f.behavior.chatContext = 8192;
+  await f.configure({ decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  for (const method of ["ask", "decide"]) {
+    const start = f.calls.length;
+    await assert.rejects(f.ai[method]({ question: "cache ".repeat(3000) }), error =>
+      error.code === "MODEL_CONTEXT" && /full question.*context\/token budget/.test(error.message));
+    assert.ok(f.calls.slice(start).every(call => !["/api/embed", "/api/chat", "/v1/systemone"].includes(call.path)));
+    await assert.rejects(f.ai[method]({ question: "   " }), { code: "INVALID_INPUT" });
+  }
+});
+
+test("a failed question-embedding segment never produces a partial-query answer", async t => {
+  const f = await fixture(t);
+  f.behavior.chatContext = 8192;
+  await f.configure({ embeddingContext: 512 });
+  await index(f.ai);
+  let segments = 0;
+  f.behavior.onEmbed = () => { if (++segments === 2) f.behavior.badVector = true; };
+  const start = f.calls.length;
+  await assert.rejects(f.ai.ask({ question: "Explain recorded cache invalidation and write boundaries. ".repeat(12) }),
+    { code: "BACKEND_INVALID_RESPONSE" });
+  assert.equal(segments, 2);
+  assert.ok(f.calls.slice(start).every(call => call.path !== "/api/chat"));
 });
