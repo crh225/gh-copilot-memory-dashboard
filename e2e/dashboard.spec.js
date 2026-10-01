@@ -1,5 +1,15 @@
 import { test, expect } from "@playwright/test";
 
+async function switchDocument(page, title) {
+  if (page.viewportSize().width <= 800) await page.locator("#document-picker").selectOption({ label: title });
+  else await page.getByRole("tab", { name: title, exact: true }).click();
+}
+
+async function closeSession(page, title) {
+  if (page.viewportSize().width <= 800) await switchDocument(page, title);
+  await page.getByRole("button", { name: `Close ${title}`, exact: true }).click();
+}
+
 test("result hover backgrounds leave room around content without shifting or overflowing", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("Search memory").fill("Implementation notes");
@@ -51,7 +61,7 @@ test("paper-and-ink archive searches, filters, inspects context, and stays local
   await expect(page.locator(".message").first()).toContainText("cache invalidation");
   await page.getByRole("button", { name: "Next turns" }).click();
   await expect(page.locator('[data-turn="11"]')).toBeVisible();
-  await page.getByRole("button", { name: "Close A cache that knows when to let go." }).click();
+  await closeSession(page, "A cache that knows when to let go.");
   await expect(page.locator(".session-page")).toHaveCount(0);
   await page.getByRole("button", { name: "Reset filters" }).click();
   await expect(page.locator("#result-count")).toHaveText("4 sessions / 104 matching entries");
@@ -101,29 +111,32 @@ test("theme toggle persists, dashboard is a top-level route, and session tabs pr
   await expect(page.locator(".markdown h2")).toContainText("Implementation notes");
   const selectedTab = page.locator('.document-tab[data-active="true"]');
   await expect(selectedTab).toHaveCSS("background-color", "rgb(23, 27, 36)");
-  await expect(selectedTab).toHaveCSS("box-shadow", "rgb(242, 149, 209) 0px -3px 0px 0px inset");
+  await expect(selectedTab).toHaveCSS("box-shadow", "rgb(242, 149, 209) 3px 0px 0px 0px inset");
   await expect(selectedTab.locator(".tab-close")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(selectedTab.locator(".tab-select")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(page.locator(".session-resume code")).toHaveText("gh copilot -- --resume=demo-cache");
+  await page.getByRole("button", { name: "Copy resume command", exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("gh copilot -- --resume=demo-cache");
   await page.getByRole("button", { name: "Copy javascript code" }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('const ttl = 60;');
   await page.screenshot({ path: testInfo.outputPath("session-dark.png") });
   await page.getByRole("button", { name: "Next turns" }).click();
   await expect(page.locator('[data-turn="11"]')).toBeVisible();
-  await page.getByRole("tab", { name: "Explorer", exact: true }).click();
+  await switchDocument(page, "Explorer");
   await page.getByRole("button", { name: "Reset filters" }).click();
   await page.getByLabel("Search memory").fill("responsive archive");
   await page.getByRole("button", { name: /^Search/ }).click();
   await page.locator("#kind").selectOption("user");
   await expect(page.locator("#result-count")).toHaveText("1 sessions / 1 matching entries");
   await page.locator(".result").click();
-  await expect(page.getByRole("tab")).toHaveCount(3);
-  await page.getByRole("tab", { name: "A cache that knows when to let go." }).click();
+  await expect(page.locator('[role="tab"]')).toHaveCount(3);
+  await switchDocument(page, "A cache that knows when to let go.");
   await expect(page.locator('.session-page:not([hidden]) [data-turn="11"]')).toBeVisible();
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await page.goBack();
   await expect(page.locator('.session-page:not([hidden]) [data-turn="11"]')).toBeVisible();
-  await page.getByRole("button", { name: "Close Making the archive feel like a notebook." }).click();
-  await expect(page.getByRole("tab")).toHaveCount(2);
+  await closeSession(page, "Making the archive feel like a notebook.");
+  await expect(page.locator('[role="tab"]')).toHaveCount(2);
   await page.getByRole("button", { name: "Switch to light mode" }).click();
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(245, 245, 240)");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -132,7 +145,8 @@ test("theme toggle persists, dashboard is a top-level route, and session tabs pr
 test("direct session links work and dashboard explains missing usage instead of displaying zero spending", async ({ page }) => {
   await page.goto("/#session=demo-cache");
   await expect(page.locator(".session-title")).toHaveText("A cache that knows when to let go.");
-  await expect(page.getByRole("tab", { name: "A cache that knows when to let go." })).toBeVisible();
+  if (page.viewportSize().width <= 800) await expect(page.locator("#document-picker")).toHaveValue("demo-cache");
+  else await expect(page.getByRole("tab", { name: "A cache that knows when to let go." })).toBeVisible();
   await page.route("**/api/dashboard?*", route => route.fulfill({
     json: {
       available: false, reason: "This CLI database has no assistant usage records table.",
@@ -260,6 +274,12 @@ test("select arrows, search clearing and tab close icons stay aligned across wid
   await expect(page.locator(".session-title")).toHaveText("A cache that knows when to let go.");
   for (const width of [320, 390, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
+    if (width <= 800) {
+      await expect(page.locator("#document-picker")).toBeVisible();
+      await expect(page.locator("#mobile-document-close")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      continue;
+    }
     const tab = page.locator('.document-tab[data-active="true"]');
     const bounds = await tab.boundingBox();
     const close = await tab.locator(".tab-close").boundingBox();

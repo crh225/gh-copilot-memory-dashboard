@@ -8,7 +8,7 @@ const directory = mkdtempSync(join(tmpdir(), "copilot-memory-demo-"));
 const path = join(directory, "session-store.db");
 createDemo(path);
 console.log("DEMO MODE: synthetic example history only.");
-const server = start({ path });
+const server = start({ path, dataPath: join(directory, "state") });
 function stop() {
   server.close(() => process.exit(0));
 }

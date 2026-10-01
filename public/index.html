@@ -17,6 +17,7 @@
       <nav class="primary-nav" aria-label="Main navigation">
         <a href="/" id="explorer-link" aria-current="page">Explorer</a>
         <a href="/dashboard" id="dashboard-link">Dashboard</a>
+        <a href="/workbench" id="workbench-link">Workbench</a>
       </nav>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
         <svg class="moon-icon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -26,7 +27,13 @@
     <main>
       <header class="topbar"><span>WORKSPACE <span class="slash">/</span> <span id="workspace-label">MEMORY EXPLORER</span></span><span class="connection" id="connection">CONNECTING</span></header>
       <p id="theme-status" class="preference-notice" role="status" hidden></p>
-      <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Open documents" hidden></div>
+      <p id="workbench-status" class="preference-notice" role="status" hidden></p>
+      <div id="document-workspace" class="document-workspace">
+      <aside id="document-navigation" class="document-navigation" aria-label="Document navigation" hidden>
+        <div class="document-picker"><label for="document-picker">OPEN DOCUMENTS</label><div class="document-picker-controls"><select id="document-picker"></select><button id="mobile-document-close" class="tab-close" type="button" aria-label="Close current document" hidden><svg class="icon" aria-hidden="true"><use href="/icons.svg#close"/></svg></button></div></div>
+        <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-orientation="vertical" aria-label="Open documents" hidden></div>
+      </aside>
+      <div class="workspace-content">
       <div id="explorer-page" role="region" aria-labelledby="explorer-title">
       <header class="explorer-intro"><h1 id="explorer-title">Memory explorer.</h1><p>Search conversations, summaries, and checkpoints.</p></header>
       <section class="stats" aria-label="Archive statistics">
@@ -43,15 +50,23 @@
             <label>SOURCE<select id="kind" name="kind"><option value="">All sources</option><option value="summary">Session summaries</option><option value="user">Your prompts</option><option value="assistant">Copilot responses</option><option value="checkpoint">Checkpoints</option></select></label>
             <label>FROM<input type="date" id="from" name="from"></label>
             <label>TO<input type="date" id="to" name="to"></label>
+            <label>RETRIEVAL<select id="retrieval" name="retrieval"><option value="literal">Exact words</option><option value="hybrid">Hybrid / local AI</option></select></label>
             <button class="reset" id="reset-filters" type="button">Reset filters</button>
           </div>
         </form>
         <div class="results-heading"><h2 id="results-title">RECENT CONTEXT</h2><span id="result-count" role="status" aria-live="polite">Connecting to archive...</span></div>
         <div id="error" class="error" role="alert" hidden></div>
+        <p id="search-notice" class="session-meta" hidden></p>
         <div id="results" class="results" aria-busy="true"></div>
         <div class="pagination" id="pagination" hidden><button id="previous" type="button">Previous</button><span id="page-info"></span><button id="next" type="button">Next</button></div>
       </section>
       </div>
+      <section id="workbench-page" hidden aria-labelledby="workbench-title">
+        <div class="dashboard-intro"><h1 id="workbench-title">Context workbench.</h1><p>Recover decisions. Connect the work. Carry the right context forward.</p></div>
+        <nav id="tool-navigation" class="tool-navigation" aria-label="Context tools"></nav>
+        <div id="workbench-error" class="error" role="alert" hidden></div>
+        <div id="tool-content"></div>
+      </section>
       <div id="session-pages"></div>
       <section id="dashboard-page" hidden aria-labelledby="dashboard-title">
         <div class="dashboard-intro"><h1 id="dashboard-title">Usage dashboard.</h1><p>Recorded activity, tokens, and performance.</p></div>
@@ -65,7 +80,9 @@
         <div id="dashboard-error" class="error" role="alert" hidden></div>
         <div id="dashboard-content" aria-live="polite" aria-busy="true"></div>
       </section>
-      <footer><span>ARCHIVE v1.0 / <span id="nav-count">--</span> SESSIONS</span><span id="last-activity">Loading activity...</span></footer>
+      </div>
+      </div>
+      <footer><span>ARCHIVE v1.1 / <span id="nav-count">--</span> SESSIONS</span><span id="last-activity">Loading activity...</span></footer>
     </main>
   </div>
 </body>

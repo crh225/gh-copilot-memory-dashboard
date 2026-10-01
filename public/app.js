@@ -1,5 +1,6 @@
 import { $, node, icon, date, api, format, empty, section } from "./ui.js";
 import { loadDashboard } from "./dashboard.js";
+import { createWorkbench } from "./workbench.js";
 
 const labels = { summary: "SUMMARY", user: "YOUR PROMPT", assistant: "COPILOT", checkpoint: "CHECKPOINT" };
 let searchOffset = 0;
@@ -10,6 +11,7 @@ let activeDocument = "explorer";
 let page = location.pathname === "/dashboard" ? "dashboard" : "explorer";
 let explorerScroll = 0;
 let dashboardScroll = 0;
+let workbenchScroll = 0;
 let documentNumber = 0;
 
 function highlighted(text, query) {
@@ -63,9 +65,11 @@ async function runSearch({ reset = true } = {}) {
   $("previous").disabled = true;
   $("next").disabled = true;
   try {
-    const data = await api("/api/search", params);
+    const data = await api(params.get("retrieval") === "hybrid" ? "/api/hybrid-search" : "/api/search", params);
     if (version !== searchVersion) return;
     $("results").replaceChildren();
+    $("search-notice").textContent = data.retrieval?.notice || data.notice || "";
+    $("search-notice").hidden = !$("search-notice").textContent;
     $("results-title").textContent = data.query ? "SEARCH RESULTS" : "RECENT CONTEXT";
     $("result-count").textContent = data.group === "session"
       ? `${format.format(data.total)} sessions / ${format.format(data.totalEntries)} matching entries`
@@ -97,7 +101,7 @@ async function runSearch({ reset = true } = {}) {
         node("span", "", result.match_count ? `${format.format(result.match_count)} matches in session` :
           result.turn_index !== null ? `turn ${result.turn_index}` : "saved context"),
         inspect);
-      card.append(meta, title, excerpt, bottom);
+      card.append(meta, title, excerpt, bottom, workbench.sourceTools(result));
       card.addEventListener("click", event => {
         if (event.target.closest("a, button, summary") || window.getSelection()?.isCollapsed === false ||
             $("results").getAttribute("aria-busy") === "true") return;
@@ -173,6 +177,7 @@ function message(label, html, query) {
 
 function saveScroll() {
   if (page === "dashboard") dashboardScroll = window.scrollY;
+  else if (page === "workbench") workbenchScroll = window.scrollY;
   else if (activeDocument === "explorer") explorerScroll = window.scrollY;
   else if (documents.has(activeDocument)) documents.get(activeDocument).scroll = window.scrollY;
 }
@@ -181,6 +186,8 @@ function updateTabs() {
   const tabs = $("workspace-tabs");
   tabs.replaceChildren();
   tabs.hidden = page === "dashboard" || documents.size === 0;
+  $("document-navigation").hidden = page !== "explorer" || documents.size === 0;
+  $("document-workspace").dataset.documents = String(page === "explorer" && documents.size > 0);
   const add = (id, label, panelId) => {
     const wrapper = node("div", "document-tab");
     wrapper.setAttribute("role", "presentation");
@@ -207,6 +214,15 @@ function updateTabs() {
   };
   add("explorer", "Explorer", "explorer-page");
   for (const [id, doc] of documents) add(id, doc.title, doc.panel.id);
+  const picker = $("document-picker");
+  picker.replaceChildren(...[["explorer", "Explorer"], ...[...documents].map(([id, doc]) => [id, doc.title])].map(([id, title]) => {
+    const option = node("option", "", title);
+    option.value = id;
+    return option;
+  }));
+  picker.value = activeDocument;
+  $("mobile-document-close").hidden = !documents.has(activeDocument);
+  $("mobile-document-close").setAttribute("aria-label", `Close ${documents.get(activeDocument)?.title || "current document"}`);
 }
 
 function navigate(nextPage, id = "explorer", { history = true } = {}) {
@@ -215,20 +231,21 @@ function navigate(nextPage, id = "explorer", { history = true } = {}) {
   activeDocument = documents.has(id) ? id : "explorer";
   $("explorer-page").hidden = page !== "explorer" || activeDocument !== "explorer";
   $("dashboard-page").hidden = page !== "dashboard";
+  $("workbench-page").hidden = page !== "workbench";
   for (const [key, doc] of documents) doc.panel.hidden = page !== "explorer" || key !== activeDocument;
-  for (const [key, link] of [["explorer", $("explorer-link")], ["dashboard", $("dashboard-link")]]) {
+  for (const [key, link] of [["explorer", $("explorer-link")], ["dashboard", $("dashboard-link")], ["workbench", $("workbench-link")]]) {
     if (page === key) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  $("workspace-label").textContent = page === "dashboard" ? "USAGE DASHBOARD" :
+  $("workspace-label").textContent = page === "workbench" ? "CONTEXT WORKBENCH" : page === "dashboard" ? "USAGE DASHBOARD" :
     activeDocument === "explorer" ? "MEMORY EXPLORER" : "SESSION WORKSPACE";
   updateTabs();
   $("explorer-page").setAttribute("role", documents.size ? "tabpanel" : "region");
   $("explorer-page").setAttribute("aria-labelledby", documents.size ? "explorer-page-tab" : "explorer-title");
-  const url = page === "dashboard" ? "/dashboard" : activeDocument === "explorer" ? "/" :
+  const url = page === "workbench" ? "/workbench" : page === "dashboard" ? "/dashboard" : activeDocument === "explorer" ? "/" :
     `/#session=${encodeURIComponent(activeDocument)}`;
   if (history && `${location.pathname}${location.hash}` !== url) window.history.pushState(null, "", url);
-  window.scrollTo(0, page === "dashboard" ? dashboardScroll :
+  window.scrollTo(0, page === "workbench" ? workbenchScroll : page === "dashboard" ? dashboardScroll :
     activeDocument === "explorer" ? explorerScroll : documents.get(activeDocument).scroll);
   if (page === "dashboard") loadDashboard();
 }
@@ -267,7 +284,8 @@ async function openSession(result) {
   const params = new URLSearchParams({ id: result.session_id });
   if (result.turn_index !== null && result.turn_index !== undefined) params.set("turn", result.turn_index);
   navigate("explorer", id);
-  if (!doc.params || previousResult.source_id !== result.source_id || previousResult.kind !== result.kind || previousQuery !== doc.query) {
+  if (!doc.params || previousResult.source_id !== result.source_id || previousResult.kind !== result.kind ||
+      previousResult.turn_index !== result.turn_index || previousQuery !== doc.query) {
     doc.panel.replaceChildren(node("h2", "session-title", "Loading session..."));
     await loadSession(doc, params, true);
   }
@@ -290,8 +308,32 @@ async function loadSession(doc, params, jump = false) {
     refresh.type = "button";
     refresh.addEventListener("click", () => loadSession(doc, doc.params));
     heading.append(node("div", "eyebrow", "SESSION / DOCUMENT WORKSPACE"), refresh);
-    content.append(heading, title, node("div", "session-meta",
+    const resume = node("div", "session-resume");
+    if (/^[A-Za-z0-9_.-]{1,200}$/.test(data.session.id)) {
+      const command = `gh copilot -- --resume=${data.session.id}`;
+      const copy = node("button", "", "Copy resume command");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(command);
+          copy.textContent = "Copied";
+        } catch (problem) {
+          console.warn("Resume command copy failed:", problem.name);
+          copy.textContent = "Copy unavailable";
+          $("workbench-status").textContent = "Clipboard access failed. Select and copy the visible resume command manually.";
+          $("workbench-status").hidden = false;
+        }
+      });
+      resume.append(node("code", "", command), copy);
+    } else {
+      resume.append(node("p", "session-meta", "This session ID contains shell-special characters. Use /resume inside Copilot CLI and paste the ID directly; the terminal shortcut is unavailable."));
+    }
+    content.append(heading, title, resume, node("p", "session-meta",
+      "Run on the host machine with GitHub CLI/Copilot installed. Resuming requires the original session state, not just a history snapshot."),
+      node("div", "session-meta",
       `${data.session.repository || "Local workspace"}${data.session.branch ? ` / ${data.session.branch}` : ""}\n${data.session.cwd || ""}\n${date(data.session.created_at)}\nSession: ${data.session.id}`));
+    content.append(workbench.sourceTools({ session_id: data.session.id, source_id: data.session.id,
+      kind: "summary", summary: doc.title }, true));
     if (data.checkpoints.length) {
       const checkpoints = section("SAVED CHECKPOINTS");
       for (const checkpoint of data.checkpoints) {
@@ -358,16 +400,19 @@ $("clear-query").addEventListener("click", () => {
   $("query").focus();
   runSearch();
 });
-for (const id of ["repository", "kind", "from", "to"]) $(id).addEventListener("change", () => runSearch());
+for (const id of ["repository", "kind", "from", "to", "retrieval"]) $(id).addEventListener("change", () => runSearch());
 $("reset-filters").addEventListener("click", () => { $("search-form").reset(); runSearch(); });
 $("previous").addEventListener("click", () => { searchOffset = Math.max(0, searchOffset - 20); runSearch({ reset: false }); });
 $("next").addEventListener("click", () => { searchOffset += 20; runSearch({ reset: false }); });
-for (const [id, target] of [["explorer-link", "explorer"], ["dashboard-link", "dashboard"]]) {
+for (const [id, target] of [["explorer-link", "explorer"], ["dashboard-link", "dashboard"], ["workbench-link", "workbench"]]) {
   $(id).addEventListener("click", event => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     navigate(target);
+    if (target === "workbench") workbench.render();
   });
+  $("document-picker").addEventListener("change", () => navigate("explorer", $("document-picker").value));
+  $("mobile-document-close").addEventListener("click", () => closeDocument(activeDocument));
 }
 document.querySelector(".brand").addEventListener("click", event => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
@@ -377,10 +422,10 @@ document.querySelector(".brand").addEventListener("click", event => {
 $("workspace-tabs").addEventListener("keydown", event => {
   const tabs = [...$("workspace-tabs").querySelectorAll('[role="tab"]')];
   const index = tabs.indexOf(event.target);
-  if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  if (index < 0 || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
   const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 :
-    (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    (index + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + tabs.length) % tabs.length;
   tabs[next].click();
   $("workspace-tabs").querySelector('[aria-selected="true"]').focus();
 });
@@ -393,9 +438,14 @@ document.addEventListener("keydown", event => {
 });
 
 function route() {
-  const id = new URLSearchParams(location.hash.slice(1)).get("session");
-  if (location.pathname === "/dashboard") navigate("dashboard", "explorer", { history: false });
-  else if (id && !documents.has(id)) openSession({ session_id: id, turn_index: null, kind: "summary" });
+  const params = new URLSearchParams(location.hash.slice(1));
+  const id = params.get("session");
+  if (location.pathname === "/workbench") { navigate("workbench", "explorer", { history: false }); workbench.render(); }
+  else if (location.pathname === "/dashboard") navigate("dashboard", "explorer", { history: false });
+  else if (id && (!documents.has(id) || params.has("turn") || params.has("checkpoint"))) openSession({
+    session_id: id, turn_index: params.get("turn"), kind: params.has("checkpoint") ? "checkpoint" : "summary",
+    source_id: params.get("checkpoint") || undefined,
+  });
   else navigate("explorer", id || "explorer", { history: false });
 }
 window.addEventListener("popstate", route);
@@ -419,4 +469,6 @@ async function initialize() {
     $("results").setAttribute("aria-busy", "false");
   }
 }
+const workbench = createWorkbench({ navigate, openSession, markdownBody,
+  getDocuments: () => [...documents].map(([id, doc]) => ({ id, title: doc.title })) });
 initialize();

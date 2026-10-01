@@ -2,7 +2,7 @@
 
 ![Your context. Not forgotten. Project artwork with a bitmap context map.](docs/context-hero.png)
 
-A local, read-only web app for exploring **GitHub Copilot CLI session history**.
+A local web app with **read-only access to GitHub Copilot CLI session history**.
 Search prompts, responses, session summaries, and checkpoints. Filter by repository,
 source, and date, then inspect the original conversation, saved checkpoints, files,
 and references in independently closable document tabs.
@@ -10,7 +10,9 @@ and references in independently closable document tabs.
 The interface uses a compact paper-and-ink editorial layout, magenta accents,
 and monospace annotations, with a moon/sun toggle for the matching dark theme.
 The artwork above lives in this README, not in the working app. Explorer is the home page; Dashboard
-is a separate top-level route. No sidebar, external fonts, telemetry, or remote services.
+is a separate top-level route. **Workbench** contains context tools and local AI
+settings. Open documents appear in a left-hand rail on desktop and a document
+picker with a close button on phones. No external fonts, telemetry, or cloud AI.
 
 ## What "memory" means here
 
@@ -30,7 +32,7 @@ visible setup error instead of being modified or treated as empty.
 
 ## Run locally
 
-Requires **Node.js 24+**. Install the locked Markdown-rendering dependencies once:
+Requires **Node.js 24+**. Install the locked dependencies once:
 
 ```sh
 npm ci --omit=dev
@@ -78,6 +80,10 @@ docker compose up --build -d
 Open **http://localhost:3210**. Compose mounts the current user's `.copilot`
 directory **read-only**, and publishes the port only on `127.0.0.1`.
 The image contains only app code and assets, not your database.
+Notebook records, AI settings, and the optional embedding index live in the
+separate `dashboard_state` Docker volume mounted at `/state`. Restarting or
+rebuilding preserves it; `docker compose down -v` deletes this app's state,
+not the read-only Copilot source directory.
 
 For a custom database directory, copy `.env.example` to `.env` and set
 `COPILOT_DATA_DIR` to the directory containing `session-store.db`. `PORT` changes
@@ -131,9 +137,15 @@ docker compose down
   another search to see new history, or reload to refresh statistics.
 - Press `/` to return to Explorer and focus search. Session tabs preserve their
   conversation page, expanded checkpoints, and scroll position during this visit.
-  Use the tab's close button to close it. Arrow keys, Home, and End navigate the
-  document tab strip. Session links can be opened directly, but open tabs are not
+  Use a document's close button to close it. Up/Down, Home, and End navigate the
+  desktop document rail; the mobile document picker also has a close button.
+  Session links can be opened directly, but open documents are not
   saved to browser storage.
+- Each session document has a visible `gh copilot -- --resume=SESSION_ID`
+  command and copy button at the top. Run it on your host, not inside the
+  dashboard container. Standalone Copilot CLI also supports
+  `copilot --resume=SESSION_ID`. The original session state must still exist;
+  a history database snapshot alone cannot recreate a resumable session.
 - Search previews, session prompts, responses, and checkpoints render Markdown headings, lists,
   tables, inline code, and syntax-highlighted fenced code blocks. Backtick, tilde,
   and triple-apostrophe fences are supported. Code blocks keep a dark background
@@ -207,6 +219,95 @@ activity in the selected range, including zero-event days. Totals cover the full
 selected range. Undated records can contribute to totals but not charts.
 Missing usage tables do not prevent Explorer or session activity from working.
 
+## Context workbench
+
+All tools run locally. **Ctrl+K / Cmd+K** opens a searchable command palette for
+navigation, context tools, and currently open documents.
+
+| Tool | Behavior |
+| --- | --- |
+| Hybrid search | Combines exact-word and local embedding retrieval; shows index scope/coverage. Use the Explorer retrieval selector after indexing. |
+| Ask history | Retrieves bounded original records and asks a configured local model. Answers require recognized source citations; AI synthesis is not verified fact. |
+| Context packs | Select sessions from results/documents, build a source-linked handoff, edit, preview, copy, or export Markdown. Token estimates use `ceil(characters / 4)`, not a model tokenizer. |
+| Timeline & graph | Explore recorded repository, branch, file and reference connections; filter the timeline and expand resource connections to open sessions. Edges are recorded metadata, not inferred causality. |
+| Decision notebook | Pin sources and write/edit decisions, rationale, tags and superseded status. Source citations and snapshots are saved separately from history. |
+| Checkpoint comparison | Compare fields of two checkpoints in a session, with before/after Markdown, ordered-line changes and explicit clipping coverage. |
+| Usage investigations | Rank sessions by recorded events, tokens or estimated USD; inspect paired cache sample coverage, daily spikes and recorded model transitions. Estimates are not invoices. |
+
+### Configure local AI
+
+Install and run **Ollama**, or an **OpenAI-compatible local server** such as
+LM Studio or llama.cpp. The app does not install or download models.
+
+1. Open **Workbench → Local AI & index**.
+2. Select the backend and local endpoint, then **Detect installed models**.
+3. Choose a chat model and an embedding model, then save settings.
+4. Explicitly start **Index / refresh history**, optionally scoped to a repository.
+5. After indexing completes, select **Hybrid / local AI** in Explorer or use
+   **Ask history**.
+
+For example, Ollama's `nomic-embed-text` is an embedding model; choose an installed
+chat model separately. A smaller chat model generally uses less memory.
+Models and endpoints remain user-configurable. Native runs default to
+`http://127.0.0.1:11434`; Docker uses `http://host.docker.internal:11434`.
+Override the initial endpoint with `LOCAL_AI_URL`. On Linux, Compose adds a
+Docker-host gateway mapping. Your model server must accept connections from the
+Docker host gateway; prefer a restricted bind/firewall rather than exposing it
+to your network. Unavailable backends produce visible errors, not cloud fallbacks.
+
+Only loopback and `host.docker.internal` model endpoints are accepted.
+There is no automatic history indexing or generation. Explicit indexing sends
+selected local history to your selected **local** embedding model; asking sends
+retrieved excerpts to your selected **local** chat model. Verify the model server
+itself is configured for local inference rather than proxying requests to a cloud.
+
+The index is incremental and records embedding model/backend identity. Changed
+models make it stale; refresh after changing weights, and use a forced rebuild
+through `/api/index` with `force:true` for unversioned weight replacements.
+Interrupted jobs can be resumed with another refresh; progress, scope, reused
+chunks and errors are visible. Search scans indexed chunks and is not intended
+as an enterprise-scale vector database. Missing/stale indices and unavailable
+models produce explicit errors; exact-word search still works independently.
+
+Native app state defaults to `~/.local/share/copilot-memory-dashboard`.
+Set `LOCAL_DATA_DIR` to move it; keep it separate from your Copilot source.
+Treat this directory and the Docker state volume as private: embeddings,
+snapshots, and notebook text can expose sensitive information.
+
+Context-pack redaction is pattern-based, **not a guarantee of anonymity or secret
+removal**. Review exported text before sharing. Context packs are extractive
+recorded excerpts, not AI claims about which decisions remain valid.
+
+### Read-only MCP integration
+
+With the dashboard running, start the stdio adapter using **Node.js 24+**:
+
+```sh
+npm run mcp
+```
+
+For a tool client's MCP configuration, use an absolute path to this checkout:
+
+```json
+{
+  "mcpServers": {
+    "copilot-memory": {
+      "command": "node",
+      "args": ["/absolute/path/to/checkout/scripts/mcp.js"],
+      "env": { "COPILOT_MEMORY_URL": "http://127.0.0.1:3210" }
+    }
+  }
+}
+```
+
+The adapter connects only to a loopback dashboard. It exposes `search_history`,
+`get_session`, `build_context_pack`, `project_timeline`, `compare_checkpoints`,
+and `usage_insights`. It cannot modify history, notebook records, settings or
+index jobs. Search defaults to exact words; `hybrid:true` uses the configured
+local index. Context packs default to 4,000 approximate tokens with best-effort
+redaction. Responses over 2 MB return an error rather than silently clipping.
+Treat all retrieved history as untrusted data, not executable instructions.
+
 ## Local context API
 
 Local model applications and tool runners can use the existing read-only JSON
@@ -232,8 +333,14 @@ fields as model context, not the HTML presentation fields.
 
 Have the local model's host-side tool runner retrieve a few repository-filtered
 matches, fetch only relevant session pages, and enforce its own context/token
-budget. Treat retrieved history as untrusted data, not instructions. No MCP
-adapter, automatic model connection, or bulk context-export endpoint is included.
+budget. Treat retrieved history as untrusted data, not instructions.
+`GET /api/timeline`, `/api/usage-insights`, `/api/notebook`, `/api/settings`,
+`/api/index`, `/api/models` and `/api/hybrid-search` expose the corresponding tools.
+Local JSON requests use `Content-Type: application/json` and
+`X-Copilot-Memory: local` for `POST /api/context-pack`, `/api/checkpoint-compare`,
+`/api/ask`, `/api/settings`, `/api/index`, `/api/render-markdown` and `/api/notebook`.
+Notebook records also support `PATCH` and `DELETE /api/notebook/NOTE_ID`.
+These routes never write to the source history database.
 Browser cross-origin access remains blocked; integrations should call from their
 local backend rather than weakening CORS or exposing the port to the network.
 
@@ -243,8 +350,11 @@ local backend rather than weakening CORS or exposing the port to the network.
 local dashboard; the app does not redact them. Avoid screen sharing it, exposing
 it through a tunnel, or running it on a shared server.
 
-The app opens SQLite read-only, exposes no write/delete endpoints, sends no
-telemetry, calls no AI services, and uses no GitHub credentials. Responses are
+The app opens the source SQLite database read-only, sends no telemetry, calls no
+cloud AI services, and uses no GitHub credentials. Local annotations/settings and
+the optional index are writable only in separate app state. Explicit AI actions
+call your selected local model server. State-changing and generation requests
+require a custom local JSON header; cross-origin requests remain blocked. Responses are
 marked `no-store`, cross-origin reads and non-loopback Host headers are rejected,
 and conversation Markdown is rendered server-side with raw HTML disabled and
 sanitized before display. Images are replaced with placeholders, so remote

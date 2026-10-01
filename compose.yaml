@@ -3,6 +3,10 @@ services:
     build: .
     ports:
       - "127.0.0.1:${PORT:-3210}:3210"
+    environment:
+      LOCAL_AI_URL: ${LOCAL_AI_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - type: bind
         source: ${COPILOT_DATA_DIR:-~/.copilot}
@@ -10,6 +14,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - dashboard_state:/state
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -17,3 +22,5 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+volumes:
+  dashboard_state:

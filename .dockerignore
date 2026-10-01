@@ -6,3 +6,5 @@
 !lib/**
 !public/
 !public/**
+!scripts/
+!scripts/mcp.js

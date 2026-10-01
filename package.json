@@ -10,11 +10,13 @@
   "scripts": {
     "start": "node server.js",
     "demo": "node scripts/demo.js",
+    "mcp": "node scripts/mcp.js",
     "test": "node --test test/*.test.js",
     "test:browser": "playwright test",
-    "check": "node --check server.js && node --check lib/store.js && node --check lib/usage.js && node --check lib/pricing.js && node --check lib/markdown.js && node --check public/app.js && node --check public/dashboard.js && node --check public/ui.js && node --check public/theme.js"
+    "check": "node --check server.js && node --check lib/store.js && node --check lib/usage.js && node --check lib/pricing.js && node --check lib/markdown.js && node --check lib/notebook.js && node --check lib/intelligence.js && node --check lib/workspace.js && node --check lib/insights.js && node --check public/app.js && node --check public/workbench.js && node --check public/dashboard.js && node --check public/ui.js && node --check public/theme.js && node --check scripts/mcp.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0",
     "sanitize-html": "^2.17.0"
