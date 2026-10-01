@@ -101,7 +101,7 @@ async function runSearch({ reset = true } = {}) {
         node("span", "", result.match_count ? `${format.format(result.match_count)} matches in session` :
           result.turn_index !== null ? `turn ${result.turn_index}` : "saved context"),
         inspect);
-      card.append(meta, title, excerpt, bottom, workbench.sourceTools(result));
+      card.append(meta, title, excerpt, bottom);
       card.addEventListener("click", event => {
         if (event.target.closest("a, button, summary") || window.getSelection()?.isCollapsed === false ||
             $("results").getAttribute("aria-busy") === "true") return;
@@ -237,7 +237,7 @@ function navigate(nextPage, id = "explorer", { history = true } = {}) {
     if (page === key) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  $("workspace-label").textContent = page === "workbench" ? "CONTEXT WORKBENCH" : page === "dashboard" ? "USAGE DASHBOARD" :
+  $("workspace-label").textContent = page === "workbench" ? "ASK HISTORY" : page === "dashboard" ? "USAGE DASHBOARD" :
     activeDocument === "explorer" ? "MEMORY EXPLORER" : "SESSION WORKSPACE";
   updateTabs();
   $("explorer-page").setAttribute("role", documents.size ? "tabpanel" : "region");
@@ -332,8 +332,6 @@ async function loadSession(doc, params, jump = false) {
       "Run on the host machine with GitHub CLI/Copilot installed. Resuming requires the original session state, not just a history snapshot."),
       node("div", "session-meta",
       `${data.session.repository || "Local workspace"}${data.session.branch ? ` / ${data.session.branch}` : ""}\n${data.session.cwd || ""}\n${date(data.session.created_at)}\nSession: ${data.session.id}`));
-    content.append(workbench.sourceTools({ session_id: data.session.id, source_id: data.session.id,
-      kind: "summary", summary: doc.title }, true));
     if (data.checkpoints.length) {
       const checkpoints = section("SAVED CHECKPOINTS");
       for (const checkpoint of data.checkpoints) {

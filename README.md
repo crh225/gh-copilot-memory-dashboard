@@ -10,8 +10,9 @@ and references in independently closable document tabs.
 The interface uses a compact paper-and-ink editorial layout, magenta accents,
 and monospace annotations, with a moon/sun toggle for the matching dark theme.
 The artwork above lives in this README, not in the working app. Explorer is the home page; Dashboard
-is a separate top-level route. **Workbench** contains context tools and local AI
-settings. Open documents appear in a left-hand rail on desktop and a document
+is a separate top-level route. **Ask History** provides cited local AI answers and
+source-backed decisions, with model/index settings in a collapsible panel.
+Open documents appear in a left-hand rail on desktop and a document
 picker with a close button on phones. No external fonts, telemetry, or cloud AI.
 
 ## What "memory" means here
@@ -219,32 +220,52 @@ activity in the selected range, including zero-event days. Totals cover the full
 selected range. Undated records can contribute to totals but not charts.
 Missing usage tables do not prevent Explorer or session activity from working.
 
-## Context workbench
+## Ask History
 
-All tools run locally. **Ctrl+K / Cmd+K** opens a searchable command palette for
-navigation, context tools, and currently open documents.
+Open **Ask History** in the top menu. This replaces the multi-tool workbench:
+there are no context-pack, notebook, timeline, comparison, or investigation tabs,
+and no Pin/Add to pack buttons on search results or session documents.
+Previously stored notebook data is preserved; the existing local APIs and
+read-only MCP tools remain available for integrations.
 
-| Tool | Behavior |
-| --- | --- |
-| Hybrid search | Combines exact-word and local embedding retrieval; shows index scope/coverage. Use the Explorer retrieval selector after indexing. |
-| Ask history | Retrieves bounded original records and asks a configured local model. Answers require recognized source citations; AI synthesis is not verified fact. |
-| Context packs | Select sessions from results/documents, build a source-linked handoff, edit, preview, copy, or export Markdown. Token estimates use `ceil(characters / 4)`, not a model tokenizer. |
-| Timeline & graph | Explore recorded repository, branch, file and reference connections; filter the timeline and expand resource connections to open sessions. Edges are recorded metadata, not inferred causality. |
-| Decision notebook | Pin sources and write/edit decisions, rationale, tags and superseded status. Source citations and snapshots are saved separately from history. |
-| Checkpoint comparison | Compare fields of two checkpoints in a session, with before/after Markdown, ordered-line changes and explicit clipping coverage. |
-| Usage investigations | Rank sessions by recorded events, tokens or estimated USD; inspect paired cache sample coverage, daily spikes and recorded model transitions. Estimates are not invoices. |
+**Answer with evidence checks** retrieves bounded original records, then asks
+your local chat model for cited claims. Citation IDs and current source integrity
+are checked deterministically. If a decision model is configured, it separately
+assesses each claim using only that claim's cited excerpts: supported,
+contradicted, or insufficient evidence. The probabilities and assessment are
+visible beside each claim. Unsupported claims are flagged, not silently removed.
+Without a decision model, evidence is explicitly **Unchecked**. A configured
+decision-model failure produces an error, not an unchecked-success fallback.
+
+**Decision / probability of yes** uses the decision model directly, without
+calling the chat model. It returns a **noul**, the model's probability of yes
+based on the retrieved evidence, with a separate yes/no/insufficient-evidence
+assessment and original source links. **A low P(yes) is not proof of no.**
+Retrieval may miss relevant history, and probabilities are model judgments,
+not calibrated confidence guarantees or verified facts.
+
+Plumb-4B runs as an Ollama decision model through `/v1/systemone`; it is not a
+chat or embedding model. The app discovers installed decision-capable models
+instead of hardcoding an account's model name. Use an Ollama version that supports
+this endpoint. Chat and decision inference can use separate local endpoints.
+
+Answers render Markdown and code blocks. Source links open the original session;
+returning to Ask History preserves the question and answer during the current
+visit. **Ctrl+K / Cmd+K** opens a searchable command palette for navigation,
+model/index configuration, and currently open documents. Hybrid retrieval remains
+available in Explorer after explicit indexing.
 
 ### Configure local AI
 
 Install and run **Ollama**, or an **OpenAI-compatible local server** such as
 LM Studio or llama.cpp. The app does not install or download models.
 
-1. Open **Workbench → Local AI & index**.
+1. Open **Ask History → Configure local models & history index**.
 2. Select the backend and local endpoint, then **Detect installed models**.
-3. Choose a chat model and an embedding model, then save settings.
+3. Choose chat, embedding, and optionally decision models, then save settings.
 4. Explicitly start **Index / refresh history**, optionally scoped to a repository.
 5. After indexing completes, select **Hybrid / local AI** in Explorer or use
-   **Ask history**.
+   **Ask History**. Decision mode needs embedding and decision models, not chat.
 
 For example, Ollama's `nomic-embed-text` is an embedding model; choose an installed
 chat model separately. A smaller chat model generally uses less memory.
@@ -258,14 +279,17 @@ to your network. Unavailable backends produce visible errors, not cloud fallback
 Only loopback and `host.docker.internal` model endpoints are accepted.
 There is no automatic history indexing or generation. Explicit indexing sends
 selected local history to your selected **local** embedding model; asking sends
-retrieved excerpts to your selected **local** chat model. Verify the model server
+retrieved excerpts to your selected **local** chat and/or decision models.
+Evidence checks send only the claim's cited excerpts to the decision model.
+Verify the model server
 itself is configured for local inference rather than proxying requests to a cloud.
 
 The index is incremental and records embedding model/backend identity. Changed
 models make it stale; refresh after changing weights, and use a forced rebuild
 through `/api/index` with `force:true` for unversioned weight replacements.
 Interrupted jobs can be resumed with another refresh; progress, scope, reused
-chunks and errors are visible. Search scans indexed chunks and is not intended
+chunks and errors are visible. Changing only decision-model settings does not
+invalidate the embedding index. Search scans indexed chunks and is not intended
 as an enterprise-scale vector database. Missing/stale indices and unavailable
 models produce explicit errors; exact-word search still works independently.
 
@@ -273,10 +297,6 @@ Native app state defaults to `~/.local/share/copilot-memory-dashboard`.
 Set `LOCAL_DATA_DIR` to move it; keep it separate from your Copilot source.
 Treat this directory and the Docker state volume as private: embeddings,
 snapshots, and notebook text can expose sensitive information.
-
-Context-pack redaction is pattern-based, **not a guarantee of anonymity or secret
-removal**. Review exported text before sharing. Context packs are extractive
-recorded excerpts, not AI claims about which decisions remain valid.
 
 ### Read-only MCP integration
 
@@ -306,6 +326,8 @@ and `usage_insights`. It cannot modify history, notebook records, settings or
 index jobs. Search defaults to exact words; `hybrid:true` uses the configured
 local index. Context packs default to 4,000 approximate tokens with best-effort
 redaction. Responses over 2 MB return an error rather than silently clipping.
+API/MCP context-pack redaction is pattern-based, not a guarantee of anonymity
+or secret removal. Review exported text before sharing.
 Treat all retrieved history as untrusted data, not executable instructions.
 
 ## Local context API
@@ -338,7 +360,8 @@ budget. Treat retrieved history as untrusted data, not instructions.
 `/api/index`, `/api/models` and `/api/hybrid-search` expose the corresponding tools.
 Local JSON requests use `Content-Type: application/json` and
 `X-Copilot-Memory: local` for `POST /api/context-pack`, `/api/checkpoint-compare`,
-`/api/ask`, `/api/settings`, `/api/index`, `/api/render-markdown` and `/api/notebook`.
+`/api/ask`, `/api/decision`, `/api/settings`, `/api/index`, `/api/render-markdown`
+and `/api/notebook`.
 Notebook records also support `PATCH` and `DELETE /api/notebook/NOTE_ID`.
 These routes never write to the source history database.
 Browser cross-origin access remains blocked; integrations should call from their

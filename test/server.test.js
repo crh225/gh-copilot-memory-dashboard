@@ -93,3 +93,19 @@ test("context tools and separate notebook writes require explicit local JSON req
   assert.equal(rejected.status, 400);
   assert.equal((await send("/api/render-markdown", { markdown: "x".repeat(200001) })).status, 413);
 });
+
+test("decision generation uses the protected local JSON route and reports missing configuration explicitly", async t => {
+  const url = await app(t);
+  const headers = { "Content-Type": "application/json", "X-Copilot-Memory": "local" };
+  const body = JSON.stringify({ question: "Are cached reads invalidated after writes?" });
+  assert.equal((await fetch(`${url}/api/decision`, { method: "POST", body })).status, 400);
+  assert.equal((await fetch(`${url}/api/decision`, { method: "POST",
+    headers: { ...headers, Origin: "https://example.com" }, body })).status, 403);
+  const response = await fetch(`${url}/api/decision`, { method: "POST", headers, body });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "DECISION_NOT_CONFIGURED");
+  const invalid = await fetch(`${url}/api/decision`, { method: "POST", headers,
+    body: JSON.stringify({ question: "" }) });
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).code, "INVALID_INPUT");
+});

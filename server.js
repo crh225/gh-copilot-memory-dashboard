@@ -93,7 +93,7 @@ export function createApp({ path = databasePath(),
         throw new AppError(403, "CROSS_ORIGIN", "Cross-origin requests are not allowed.");
       }
       const url = new URL(req.url, `http://${host}`);
-      const mutations = new Set(["/api/settings", "/api/index", "/api/ask", "/api/context-pack", "/api/checkpoint-compare", "/api/notebook", "/api/render-markdown"]);
+      const mutations = new Set(["/api/settings", "/api/index", "/api/ask", "/api/decision", "/api/context-pack", "/api/checkpoint-compare", "/api/notebook", "/api/render-markdown"]);
       const noteRoute = url.pathname.match(/^\/api\/notebook\/([a-zA-Z0-9-]{1,100})$/);
       if (req.method !== "GET") {
         if (!(req.method === "POST" && mutations.has(url.pathname)) &&
@@ -105,6 +105,7 @@ export function createApp({ path = databasePath(),
         if (url.pathname === "/api/settings") result = await ai().configure(body);
         else if (url.pathname === "/api/index") result = ai().startIndex(body);
         else if (url.pathname === "/api/ask") result = await ai().ask(body);
+        else if (url.pathname === "/api/decision") result = await ai().decide(body);
         else if (url.pathname === "/api/context-pack") result = withStore(path, db => contextPack(db, body));
         else if (url.pathname === "/api/checkpoint-compare") result = withStore(path, db => checkpointComparison(db, body));
         else if (url.pathname === "/api/render-markdown") {

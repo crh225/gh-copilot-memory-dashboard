@@ -1,48 +1,38 @@
 import { test, expect } from "@playwright/test";
 
-test("pins, editable notebooks, context packs, graphs, investigations and command palette work without AI", async ({ page }, testInfo) => {
+const config = { provider: "ollama", endpoint: "http://127.0.0.1:11434",
+  decisionEndpoint: "http://127.0.0.1:11434", chatModel: "", embeddingModel: "", decisionModel: "" };
+const citation = { id: "S1", session_id: "demo-cache", source_id: "1", kind: "assistant",
+  turn_index: 0, summary: "Cache source", excerpt: "Invalidate cached reads after writes." };
+const checkedAnswer = {
+  answer: "Invalidate **after writes** [S1].",
+  answer_html: "<p>Invalidate <strong>after writes</strong> [S1].</p>",
+  claims: [{ text: "Invalidate **after writes**.", text_html: "<p>Invalidate <strong>after writes</strong>.</p><pre><code class=\"language-js\">cache.clear();</code></pre>",
+    source_ids: ["S1"], evidence: { state: "checked", assessment: "supported",
+      probabilities: { supported: 0.8, contradicted: 0.1, insufficient: 0.1 } } },
+  { text: "There is no invalidation.", text_html: "<p>There is no invalidation.</p>",
+    source_ids: ["S1"], evidence: { state: "checked", assessment: "contradicted",
+      probabilities: { supported: 0.1, contradicted: 0.7, insufficient: 0.2 } } }],
+  citations: [citation], notice: "Local AI synthesis. Check the original sources.",
+};
+
+test("Ask History replaces unused tools and palette entries without disturbing document navigation", async ({ page }) => {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto("/");
   await expect(page.locator(".result")).toHaveCount(4);
-  const first = page.locator(".result").first();
-  await first.getByRole("button", { name: "Pin source", exact: true }).click();
-  await expect(page.locator("#workbench-status")).toContainText("Source pinned");
-  await first.getByRole("button", { name: "Add to context pack", exact: true }).click();
-  await page.getByRole("link", { name: "Workbench", exact: true }).click();
-  await page.locator("#tool-navigation").getByRole("button", { name: "Context packs", exact: true }).click();
-  await page.getByRole("button", { name: "Build context pack", exact: true }).click();
-  await expect(page.getByLabel("Editable context pack")).not.toHaveValue("");
-  const original = await page.getByLabel("Editable context pack").inputValue();
-  expect(original).toMatch(/\[source\]\(\/#session=/);
-  await page.getByLabel("Editable context pack").fill("# Edited pack\n\n**Keep citations**.");
-  await page.getByRole("button", { name: "Preview edited pack", exact: true }).click();
-  await expect(page.locator(".pack-preview h1")).toHaveText("Edited pack");
-  await expect(page.locator(".pack-preview strong")).toHaveText("Keep citations");
-  const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export Markdown", exact: true }).click();
-  expect((await download).suggestedFilename()).toBe("context-pack.md");
-  await page.locator("#tool-navigation").getByRole("button", { name: "Decision notebook", exact: true }).click();
-  await expect(page.locator(".notebook-record").first()).toBeVisible();
-  await page.getByText("Write a decision", { exact: true }).click();
-  await page.getByLabel("Title", { exact: true }).fill(`A synthetic decision ${testInfo.project.name}`);
-  await page.getByLabel("Decision / Markdown", { exact: true }).fill("**Invalidate** after commit.");
-  await page.getByLabel("Rationale", { exact: true }).fill("Keep reads fresh.");
-  await page.getByLabel("Tags (comma separated)").fill("cache, tested");
-  await page.getByRole("button", { name: "Save decision", exact: true }).click();
-  await expect(page.locator(".notebook-record").filter({ hasText: `A synthetic decision ${testInfo.project.name}` })).toContainText("Invalidate");
-  await page.reload();
-  await page.locator("#tool-navigation").getByRole("button", { name: "Decision notebook", exact: true }).click();
-  await expect(page.locator(".notebook-record").filter({ hasText: `A synthetic decision ${testInfo.project.name}` })).toContainText("Keep reads fresh.");
-  await page.locator("#tool-navigation").getByRole("button", { name: "Timeline & graph", exact: true }).click();
-  await expect(page.locator(".timeline-entry")).toHaveCount(4);
-  await page.locator(".graph-resource").first().locator("summary").click();
-  await expect(page.locator(".graph-resource").first().locator(".source-link").first()).toBeVisible();
-  await page.locator("#tool-navigation").getByRole("button", { name: "Usage investigations", exact: true }).click();
-  await expect(page.locator(".investigation-list .notebook-record")).toHaveCount(4);
-  await expect(page.locator(".investigation-list")).toContainText("gpt-5.4-mini");
+  await expect(page.getByRole("button", { name: /Pin source|Add to context pack/ })).toHaveCount(0);
+  await page.locator(".result").first().getByRole("button", { name: "Inspect session ->" }).click();
+  await expect(page.locator(".session-resume code")).toContainText("gh copilot -- --resume=");
+  await expect(page.getByRole("button", { name: "Compare checkpoints", exact: true })).toHaveCount(0);
+  await page.getByRole("link", { name: "Ask History", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Ask your history." })).toBeVisible();
+  await expect(page.locator("#tool-navigation")).toHaveCount(0);
+  await expect(page.locator("#ai-configuration")).not.toHaveAttribute("open");
   await page.keyboard.press("Control+k");
-  await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(palette).toBeVisible();
+  await expect(palette.getByRole("button", { name: /Context packs|Timeline|notebook|Compare|investigations/ })).toHaveCount(0);
   await page.getByLabel("Find a command").fill("Search archive");
   await page.getByLabel("Find a command").press("Enter");
   await expect(page.locator("#query")).toBeFocused();
@@ -51,87 +41,141 @@ test("pins, editable notebooks, context packs, graphs, investigations and comman
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("settings discover selectable local models, indexing reports progress and hybrid search displays coverage", async ({ page }) => {
+test("inline configuration discovers role-safe decision models and saves independent endpoints", async ({ page }) => {
+  let saved;
+  let indexWrites = 0;
   await page.route("**/api/settings", async route => {
-    if (route.request().method() === "POST") {
-      const body = route.request().postDataJSON();
-      expect(body.chatModel).toBe("local-chat");
-      expect(body.embeddingModel).toBe("local-embed");
-    }
-    await route.fulfill({ json: { provider: "ollama", endpoint: "http://127.0.0.1:11434", chatModel: "", embeddingModel: "" } });
+    if (route.request().method() === "POST") saved = route.request().postDataJSON();
+    await route.fulfill({ json: config });
   });
-  await page.route("**/api/models?*", route => route.fulfill({ json: { models: [{ name: "local-chat", capabilities: ["completion"] }, { name: "local-embed", capabilities: ["embedding"] }] } }));
-  await page.route("**/api/index", route => route.fulfill({ json: { state: "complete", configured: true, processed: 104, total: 104, embedded: 104, reused: 0, scope: "all" } }));
+  await page.route("**/api/models?*", route => route.fulfill({ json: { models: [
+    { name: "local-chat", capabilities: ["completion"] },
+    { name: "local-embed", capabilities: ["embedding"] },
+    { name: "local-decisions", capabilities: ["decision"] },
+  ] } }));
+  await page.route("**/api/index", route => {
+    if (route.request().method() === "POST") indexWrites++;
+    return route.fulfill({ json: { state: "complete", processed: 104, total: 104, embedded: 104, reused: 0 } });
+  });
   await page.goto("/workbench");
-  await page.locator("#tool-navigation").getByRole("button", { name: "Local AI & index", exact: true }).click();
+  await page.getByText("Configure local models & history index", { exact: true }).click();
   await page.getByRole("button", { name: "Detect installed models", exact: true }).click();
   await page.locator(".model-choice").filter({ hasText: "local-chat" }).getByRole("button", { name: "Use for chat" }).click();
   await page.locator(".model-choice").filter({ hasText: "local-embed" }).getByRole("button", { name: "Use for embeddings" }).click();
+  const decisions = page.locator(".model-choice").filter({ hasText: "local-decisions" });
+  await expect(decisions.getByRole("button", { name: "Use for chat" })).toBeDisabled();
+  await expect(decisions.getByRole("button", { name: "Use for embeddings" })).toBeDisabled();
+  await decisions.getByRole("button", { name: "Use for decisions" }).click();
+  await page.getByLabel("Ollama decision endpoint").fill("http://127.0.0.1:11435");
   await page.getByRole("button", { name: "Save local AI settings", exact: true }).click();
   await expect(page.locator("#workbench-status")).toContainText("settings saved");
-  await expect(page.locator("#tool-content")).toContainText('"processed": 104');
-  await page.route("**/api/hybrid-search?*", async route => {
-    const url = new URL(route.request().url());
-    url.pathname = "/api/search";
-    const response = await route.fetch({ url: url.toString() });
-    const result = await response.json();
-    await route.fulfill({ json: { ...result, retrieval: { notice: "Hybrid results / indexed scope: synthetic demo" } } });
-  });
-  await page.getByRole("link", { name: "Explorer", exact: true }).click();
-  await page.getByLabel("Search memory").fill("cache");
-  await page.locator("#retrieval").selectOption("hybrid");
-  await expect(page.locator("#search-notice")).toContainText("indexed scope");
-  await expect(page.locator(".result").first()).toContainText("cache");
+  expect(saved).toMatchObject({ chatModel: "local-chat", embeddingModel: "local-embed",
+    decisionModel: "local-decisions", decisionEndpoint: "http://127.0.0.1:11435" });
+  await expect(page.locator("#ai-configuration")).toContainText("104 processed");
+  expect(indexWrites).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("ask-history citations open source documents and checkpoint comparisons render two columns", async ({ page }) => {
-  await page.route("**/api/ask", route => route.fulfill({ json: {
-    answer: "Invalidate after writes [S1].", answer_html: "<p>Invalidate after writes [S1].</p>",
-    citations: [{ id: "S1", session_id: "demo-cache", source_id: "1", kind: "assistant", turn_index: 0, summary: "Cache source" }],
-    notice: "AI synthesis; verify sources.",
-  } }));
+test("answers render Markdown and per-claim evidence, and survive inspecting their citations", async ({ page }) => {
+  await page.route("**/api/ask", route => route.fulfill({ json: checkedAnswer }));
   await page.goto("/workbench");
   await page.getByLabel("Question (up to 200 characters / 12 words)").fill("How should cache invalidation work?");
-  await page.getByRole("button", { name: "Ask local model", exact: true }).click();
-  await expect(page.locator(".answer-content")).toContainText("Invalidate after writes [S1]");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".answer-content .markdown strong")).toHaveText("after writes");
+  await expect(page.getByRole("button", { name: "Copy js code" })).toBeVisible();
+  await expect(page.locator(".claim-check").first()).toContainText("Evidence check: Supported");
+  await expect(page.locator(".claim-check").first()).toContainText("Supported: 80.0%");
+  await expect(page.locator(".claim-check").last()).toContainText("Evidence check: Contradicted");
+  await expect(page.locator(".answer-content")).toContainText("not proof of correctness");
+  await page.getByText("Read the cited excerpt", { exact: true }).click();
+  await expect(page.locator(".source-excerpt")).toHaveText(citation.excerpt);
   await page.locator(".answer-content").getByRole("button", { name: "Cache source", exact: true }).click();
   await expect(page.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeVisible();
-  await page.getByRole("link", { name: "Workbench", exact: true }).click();
-  await page.route("**/api/session?id=demo-cache", async route => {
-    const response = await route.fetch();
-    const result = await response.json();
-    result.checkpoints.push({ ...result.checkpoints[0], id: 999, checkpoint_number: 2, title: "Updated checkpoint" });
-    await route.fulfill({ json: result });
-  });
-
-  await page.route("**/api/checkpoint-compare", route => {
-    expect(route.request().postDataJSON()).toEqual({ session_id: "demo-cache", from: "1", to: "999" });
-    return route.fulfill({ json: { fields: [{ name: "work_done", changed: true, before_html: "<p>Before</p>", after_html: "<p><strong>After</strong></p>" }] } });
-  });
-  await page.locator("#tool-navigation").getByRole("button", { name: "Compare checkpoints", exact: true }).click();
-  await page.getByLabel("Source session ID", { exact: true }).fill("demo-cache");
-  await page.getByRole("button", { name: "Load checkpoints", exact: true }).click();
-  await page.getByRole("button", { name: "Compare selected checkpoints", exact: true }).click();
-  await expect(page.locator(".comparison-grid > div")).toHaveCount(2);
-  await expect(page.locator(".comparison-grid strong")).toHaveText("After");
+  await page.getByRole("link", { name: "Ask History", exact: true }).click();
+  await expect(page.locator(".claim-check")).toHaveCount(2);
+  await expect(page.getByLabel("Question (up to 200 characters / 12 words)")).toHaveValue("How should cache invalidation work?");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("usage spikes and recorded model transitions explain their evidence without raw JSON", async ({ page }) => {
-  await page.route("**/api/usage-insights*", async route => {
-    const response = await route.fetch();
-    const data = await response.json();
-    data.spikes = [{ day: "2026-01-23", tokens: 4000, ratio: 4, usd: 0.04,
-      baseline: { observedDays: 3, calendarDays: 7, meanTokens: 1000 },
-      coverage: { tokenSamples: 4, events: 4 } }];
-    data.modelChanges = [{ session_id: "demo-cache", turn_index: 0, from: "local-model-a",
-      to: "local-model-b", agent_id: null, created_at: "2026-01-20 10:00:00" }];
-    await route.fulfill({ json: data });
+test("decision mode returns a noul with explicit insufficient evidence and never requests chat", async ({ page }) => {
+  let chatCalls = 0;
+  let body;
+  await page.route("**/api/ask", route => { chatCalls++; return route.fulfill({ json: checkedAnswer }); });
+  await page.route("**/api/decision", route => {
+    body = route.request().postDataJSON();
+    expect(route.request().headers()["x-copilot-memory"]).toBe("local");
+    return route.fulfill({ json: { decision: { noul: 0.08, assessment: "insufficient",
+      probabilities: { yes: 0.07, no: 0.13, insufficient: 0.8 } },
+      citations: [citation], notice: "Only indexed, retrieved excerpts were evaluated." } });
   });
   await page.goto("/workbench");
-  await page.locator("#tool-navigation").getByRole("button", { name: "Usage investigations", exact: true }).click();
-  await expect(page.locator(".usage-spike")).toContainText("4.0x baseline");
-  await expect(page.locator(".usage-spike")).toContainText("3 observed days");
-  await expect(page.locator(".model-transition")).toContainText("local-model-a -> local-model-b");
-  await page.getByRole("button", { name: "Inspect model transition", exact: true }).click();
-  await expect(page.locator('.session-page:not([hidden]) [data-turn="0"]')).toBeVisible();
+  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("Was the cache policy implemented?");
+  await page.getByLabel("Repository (optional exact name)").fill("example/widget-api");
+  await page.getByLabel("Response mode").selectOption("decision");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".answer-content")).toContainText("Model P(yes): 8.0%");
+  await expect(page.locator(".answer-content")).toContainText("Insufficient evidence");
+  await expect(page.locator(".answer-content")).toContainText("not proof of no");
+  await expect(page.locator(".answer-content")).toContainText("Insufficient: 80.0%");
+  expect(body).toEqual({ question: "Was the cache policy implemented?", repository: "example/widget-api" });
+  expect(chatCalls).toBe(0);
+});
+
+test("decision failures stay explicit and can be retried without a success-shaped fallback", async ({ page }) => {
+  let fail = true;
+  await page.route("**/api/decision", route => route.fulfill(fail
+    ? { status: 502, json: { error: "The configured decision model is unavailable.", code: "BACKEND_UNAVAILABLE" } }
+    : { json: { decision: { noul: 0.9, assessment: "yes" }, citations: [citation], notice: "Model judgment." } }));
+  await page.goto("/workbench");
+  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("Are cached reads invalidated after writes?");
+  await page.getByLabel("Response mode").selectOption("decision");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator("#workbench-error")).toHaveText("The configured decision model is unavailable.");
+  await expect(page.locator(".answer-content")).toBeEmpty();
+  await expect(page.getByRole("button", { name: "Ask history", exact: true })).toBeEnabled();
+  fail = false;
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator("#workbench-error")).toBeHidden();
+  await expect(page.locator(".answer-content")).toContainText("Model P(yes): 90.0%");
+});
+
+test("answers without a decision model explicitly show unchecked evidence", async ({ page }) => {
+  await page.route("**/api/ask", route => route.fulfill({ json: {
+    answer_html: "<p>A cited <strong>answer</strong> [S1].</p>",
+    evidence: { state: "unchecked", reason: "Select a decision model to assess cited claims." },
+    citations: [citation], notice: "Citations identify records, not verified truth.",
+  } }));
+  await page.goto("/workbench");
+  await page.getByLabel("Question (up to 200 characters / 12 words)").fill("What was decided?");
+  await page.getByRole("button", { name: "Ask history", exact: true }).click();
+  await expect(page.locator(".answer-content strong").first()).toHaveText("answer");
+  await expect(page.locator(".claim-check")).toContainText("Evidence check: Unchecked");
+  await expect(page.locator(".claim-check")).toContainText("Select a decision model");
+});
+
+test("index controls remain inline, require explicit action, and respect running and cancellation states", async ({ page }) => {
+  let state = { state: "not_indexed", processed: 0, total: 0, running: false };
+  await page.route("**/api/settings", route => route.fulfill({ json: config }));
+  await page.route("**/api/index", route => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      if (body.cancel) state = { state: "cancelled", processed: 4, total: 16, running: false };
+      else {
+        expect(body.repository).toBe("example/widget-api");
+        state = { state: "running", processed: 4, total: 16, running: true };
+      }
+    }
+    return route.fulfill({ json: state });
+  });
+  await page.goto("/workbench");
+  await page.getByText("Configure local models & history index", { exact: true }).click();
+  await expect(page.getByRole("button", { name: "Stop indexing", exact: true })).toBeDisabled();
+  await page.getByLabel("Repository scope (blank for all history)").fill("example/widget-api");
+  await page.getByRole("button", { name: "Index / refresh history", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Index / refresh history", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Stop indexing", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Stop indexing", exact: true }).click();
+  await expect(page.locator("#ai-configuration")).toContainText("cancelled / 4 processed");
+  await expect(page.getByRole("button", { name: "Index / refresh history", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Stop indexing", exact: true })).toBeDisabled();
 });

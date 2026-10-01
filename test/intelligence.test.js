@@ -21,7 +21,8 @@ async function fixture(t, provider = "ollama") {
   writer.close();
   const calls = [];
   const behavior = { failure: false, badVector: false, answer: "Synthesis: invalidate after successful writes [S1].",
-    answers: [], delay: 0, failAt: Infinity, digest: "synthetic-weight-v1", redirect: false, onChat: null };
+    answers: [], delay: 0, failAt: Infinity, digest: "synthetic-weight-v1", redirect: false, onChat: null,
+    onDecision: null, decisionFailure: false, decisionResponse: null, unknownDecision: false };
   let embeddings = 0;
   const server = createServer(async (req, res) => {
     let text = "";
@@ -35,10 +36,13 @@ async function fixture(t, provider = "ollama") {
     if (behavior.redirect) { res.writeHead(302, { Location: `${endpoint}/redirected` }); res.end(); return; }
     if (req.url === "/api/tags") return respond({ models: [
       { name: "nomic-embed-text:latest", digest: behavior.digest }, { name: "qwen2.5:3b", digest: "synthetic-chat-v1" },
+      { name: "synthetic-plumb:latest", digest: "synthetic-decision-v1" },
     ] });
     if (req.url === "/api/show") return respond({
-      capabilities: body.model === "nomic-embed-text:latest" ? ["embedding"] : ["completion"],
-      model_info: { "bert.context_length": 2048 },
+      capabilities: body.model === "synthetic-plumb:latest" && behavior.unknownDecision ? [] :
+        body.model === "nomic-embed-text:latest" ? ["embedding"] : ["completion"],
+      details: body.model === "synthetic-plumb:latest" && !behavior.unknownDecision ? { parent_model: "plumb-4b-synthetic.gguf" } : {},
+      model_info: { "bert.context_length": body.model === "synthetic-plumb:latest" ? 32768 : 2048 },
     });
     if (req.url === "/v1/models") return respond({ data: [
       { id: "nomic-embed-text:latest", capabilities: ["embedding"], context_length: 2048 },
@@ -59,6 +63,16 @@ async function fixture(t, provider = "ollama") {
       const content = behavior.answers.length ? behavior.answers.shift() : behavior.answer;
       return respond(req.url === "/api/chat" ? { message: { content } } :
         { choices: [{ message: { content } }] });
+    }
+    if (req.url === "/v1/systemone") {
+      await behavior.onDecision?.();
+      if (behavior.decisionFailure) { res.writeHead(503); res.end(); return; }
+      if (behavior.decisionResponse) return respond(behavior.decisionResponse);
+      const answers = Object.fromEntries(Object.entries(body.questions).map(([name, q]) => [name,
+        q.type === "noul" ? { type: "noul", noul: 0.8 } :
+          { type: "choice", choice: Object.keys(q.criteria)[0],
+            probabilities: Object.fromEntries(Object.keys(q.criteria).map((k, i) => [k, i === 0 ? 0.8 : 0.1])) }]));
+      return respond({ model: body.model, answers });
     }
     res.writeHead(404); res.end();
   });
@@ -98,6 +112,229 @@ async function index(ai, body = {}) {
   assert.equal(status.state, "complete", JSON.stringify(status));
   return status;
 }
+
+test("decision settings migrate legacy index identities and persist without re-embedding", async t => {
+  const f = await fixture(t);
+  assert.equal(f.ai.settings().decisionEndpoint, f.endpoint);
+  assert.equal(f.ai.settings().decisionModel, "");
+  await assert.rejects(f.ai.configure({ decisionEndpoint: "https://example.com" }), { code: "INVALID_ENDPOINT" });
+  await assert.rejects(f.ai.configure({ decisionModel: "\ninvalid" }), { code: "INVALID_INPUT" });
+  await f.configure();
+  const before = await index(f.ai);
+  const embedded = f.embeddings();
+  const legacy = JSON.parse(readFileSync(join(f.dataPath, "settings.json"), "utf8"));
+  delete legacy.decisionModel;
+  delete legacy.decisionEndpoint;
+  writeFileSync(join(f.dataPath, "settings.json"), JSON.stringify(legacy));
+  await f.ai.close();
+  const reopened = f.open();
+  assert.equal(reopened.indexStatus().state, "complete");
+  assert.equal(reopened.indexStatus().identity, before.identity);
+  await reopened.configure({ decisionModel: "synthetic-plumb:latest", decisionEndpoint: `${f.endpoint}/` });
+  assert.equal(reopened.indexStatus().state, "complete");
+  assert.equal(reopened.indexStatus().identity, before.identity);
+  await index(reopened);
+  assert.equal(f.embeddings(), embedded);
+  await reopened.close();
+  assert.equal(f.open().settings().decisionModel, "synthetic-plumb:latest");
+  const discovered = await f.open().models();
+  assert.equal(discovered.recommendations.decisionModel, "synthetic-plumb:latest");
+  assert.deepEqual(discovered.models.find(m => m.id === "synthetic-plumb:latest").capabilities, ["decision", "systemone"]);
+});
+
+test("missing decision configuration explicitly leaves claims unchecked and rejects standalone decisions", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  const result = await f.ai.ask({ question: "cache" });
+  assert.equal(result.evidence.state, "unchecked");
+  assert.match(result.evidence.reason, /No decision model/);
+  assert.equal(result.claims[0].granularity, "whole_text");
+  assert.deepEqual(result.claims[0].source_ids, ["S1"]);
+  assert.equal(result.claims[0].evidence.state, "unchecked");
+  assert.equal(typeof result.claims[0].text_html, "string");
+  await assert.rejects(f.ai.decide({ question: "cache" }), { code: "DECISION_NOT_CONFIGURED" });
+  assert.equal(f.calls.filter(c => c.path === "/v1/systemone").length, 0);
+});
+
+test("atomic claims check only exact cited excerpts and retain contradicted/insufficient claims", async t => {
+  const f = await fixture(t, "openai");
+  await f.configure({ decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  f.behavior.answer = JSON.stringify({ claims: [
+    { text: "A cache design was requested.", source_ids: ["S2"] },
+    { text: "A cache implementation was completed.", source_ids: ["S1"] },
+  ] });
+  let n = 0;
+  f.behavior.onDecision = () => {
+    n++;
+    const probabilities = n === 1 ? { supported: 0.1, contradicted: 0.8, insufficient: 0.1 } :
+      { supported: 0.1, contradicted: 0.1, insufficient: 0.8 };
+    f.behavior.decisionResponse = { model: "synthetic-plumb:latest", answers: {
+      support: { type: "choice", choice: n === 1 ? "contradicted" : "insufficient", probabilities },
+    } };
+  };
+  const result = await f.ai.ask({ question: "cache", limit: 3 });
+  assert.equal(result.evidence.state, "checked");
+  assert.deepEqual(result.claims.map(c => c.evidence.assessment), ["contradicted", "insufficient"]);
+  assert.ok(result.claims.every(c => c.granularity === "atomic"));
+  assert.match(result.answer, /implementation was completed/);
+  assert.deepEqual(result.citations.map(c => c.id), ["S1", "S2"]);
+  const checks = f.calls.filter(c => c.path === "/v1/systemone");
+  assert.deepEqual(checks.map(c => JSON.parse(c.body.state).sources.map(s => s.label)), [["S2"], ["S1"]]);
+  for (const check of checks) {
+    assert.match(check.body.questions.support.instructions, /untrusted data/);
+    for (const s of JSON.parse(check.body.state).sources) {
+      assert.equal(s.excerpt, result.citations.find(c => c.id === s.label).excerpt);
+    }
+  }
+  f.behavior.answer = JSON.stringify({ claims: [{ text: "Conflicting inline reference [S2].", source_ids: ["S1"] }] });
+  await assert.rejects(f.ai.ask({ question: "cache", limit: 3 }), { code: "UNGROUNDED_ANSWER" });
+  assert.equal(f.calls.filter(c => c.path === "/v1/systemone").length, checks.length);
+});
+
+test("standalone nouls work with blank chat and separate Ollama decision endpoint for OpenAI retrieval", async t => {
+  const f = await fixture(t, "openai");
+  await f.configure({ completionModel: "", decisionModel: "synthetic-plumb:latest", decisionEndpoint: f.endpoint });
+  await index(f.ai);
+  const result = await f.ai.decide({ question: "Was cache invalidation requested?", repository: "example/widget-api", limit: 2 });
+  assert.equal(result.decision.noul, 0.8);
+  assert.equal(result.decision.assessment, "yes");
+  assert.equal(result.decision.state, "checked");
+  assert.match(result.decision.noulMeaning, /not factual probability/);
+  assert.ok(result.citations.length);
+  assert.ok(f.calls.some(c => c.path === "/v1/embeddings"));
+  assert.ok(f.calls.some(c => c.path === "/api/show" && c.body.model === "synthetic-plumb:latest"));
+  assert.ok(!f.calls.some(c => ["/api/chat", "/v1/chat/completions"].includes(c.path)));
+  const check = f.calls.find(c => c.path === "/v1/systemone");
+  assert.equal(check.body.questions.yes.type, "noul");
+  assert.deepEqual(Object.keys(check.body.questions.availability.criteria), ["supportsYes", "supportsNo", "insufficient"]);
+  assert.deepEqual(JSON.parse(check.body.state).sources, result.citations.map(c => ({ label: c.id, excerpt: c.excerpt })));
+});
+
+test("choice distributions distinguish yes, no, insufficient and ties without renormalizing nouls", async t => {
+  const f = await fixture(t);
+  await f.configure({ decisionModel: "synthetic-plumb:latest", completionModel: "" });
+  await index(f.ai);
+  for (const [probabilities, assessment] of [
+    [{ supportsYes: 0.8, supportsNo: 0.1, insufficient: 0.1 }, "yes"],
+    [{ supportsYes: 0.1, supportsNo: 0.8, insufficient: 0.1 }, "no"],
+    [{ supportsYes: 0.1, supportsNo: 0.1, insufficient: 0.8 }, "insufficient"],
+    [{ supportsYes: 0.5, supportsNo: 0.5, insufficient: 0 }, "uncertain"],
+  ]) {
+    f.behavior.decisionResponse = { model: "synthetic-plumb:latest", answers: {
+      yes: { type: "noul", noul: 0.02 },
+      availability: { type: "choice", choice: Object.keys(probabilities).reduce((a, b) => probabilities[a] >= probabilities[b] ? a : b), probabilities },
+    } };
+    const result = await f.ai.decide({ question: "cache" });
+    assert.equal(result.decision.assessment, assessment);
+    assert.equal(result.decision.noul, 0.02);
+    assert.deepEqual(result.decision.probabilities, {
+      yes: probabilities.supportsYes, no: probabilities.supportsNo, insufficient: probabilities.insufficient,
+    });
+  }
+});
+
+test("malformed choice/noul responses and configured backend failure never fall through to unchecked success", async t => {
+  const f = await fixture(t);
+  await f.configure({ decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  for (const probabilities of [
+    { supported: 0.8, contradicted: 0.1 },
+    { supported: 0.8, contradicted: 0.1, insufficient: 0.1, other: 0 },
+    { supported: 1.1, contradicted: -0.2, insufficient: 0.1 },
+    { supported: 0.2, contradicted: 0.2, insufficient: 0.2 },
+    { supported: null, contradicted: 0.1, insufficient: 0.1 },
+    { supported: "0.8", contradicted: 0.1, insufficient: 0.1 },
+  ]) {
+    f.behavior.decisionResponse = { model: "synthetic-plumb:latest", answers: {
+      support: { type: "choice", choice: "supported", probabilities },
+    } };
+    await assert.rejects(f.ai.ask({ question: "cache" }), { code: "BACKEND_INVALID_RESPONSE" });
+  }
+  for (const noul of [null, "0.8", -0.1, 1.1]) {
+    f.behavior.decisionResponse = { model: "synthetic-plumb:latest", answers: {
+      yes: { type: "noul", noul }, availability: { type: "choice", choice: "supportsYes",
+        probabilities: { supportsYes: 0.8, supportsNo: 0.1, insufficient: 0.1 } },
+    } };
+    await assert.rejects(f.ai.decide({ question: "cache" }), { code: "BACKEND_INVALID_RESPONSE" });
+  }
+  f.behavior.decisionResponse = null;
+  f.behavior.decisionFailure = true;
+  await assert.rejects(f.ai.ask({ question: "cache" }), { code: "BACKEND_FAILURE" });
+  await assert.rejects(f.ai.decide({ question: "cache" }), { code: "BACKEND_FAILURE" });
+  f.behavior.unknownDecision = true;
+  await assert.rejects(f.ai.decide({ question: "cache" }), { code: "BACKEND_FAILURE" });
+  assert.ok(f.calls.filter(c => c.path === "/v1/systemone").length > 0, "unknown metadata must verify actual endpoint");
+});
+
+test("source, index and decision settings changes during checks invalidate the entire result", async t => {
+  for (const [mode, action] of ["source", "index", "config"].flatMap(mode => ["ask", "decide"].map(action => [mode, action]))) {
+    const f = await fixture(t);
+    await f.configure({ decisionModel: "synthetic-plumb:latest" });
+    await index(f.ai);
+    f.behavior.onDecision = async () => {
+      if (mode === "source") f.write("UPDATE sessions SET summary='changed synthetic cache' WHERE id='demo-cache'");
+      if (mode === "index") await index(f.ai);
+      if (mode === "config") {
+        await f.ai.configure({ decisionModel: "" });
+        await f.ai.configure({ decisionModel: "synthetic-plumb:latest" });
+      }
+    };
+    await assert.rejects(f.ai[action]({ question: "cache" }), {
+      code: { source: "SOURCE_CHANGED", index: "INDEX_CHANGED", config: "CONFIG_CHANGED" }[mode],
+    });
+  }
+});
+
+test("decision-only roles cannot generate chat or embeddings; verified plain passages expose granularity", async t => {
+  const f = await fixture(t);
+  await f.configure({ decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  const checked = await f.ai.ask({ question: "cache" });
+  assert.equal(checked.claims[0].granularity, "whole_text");
+  assert.equal(checked.claims[0].evidence.assessment, "supported");
+  assert.equal(checked.claims[0].evidence.model, "synthetic-plumb:latest");
+  assert.match(checked.notice, /not proof/);
+  f.behavior.answer = JSON.stringify({ claims: [
+    { text: "**Synthetic** <script>alert(1)</script>", source_ids: ["S1"] },
+  ] });
+  const safe = await f.ai.ask({ question: "cache" });
+  assert.match(safe.claims[0].text_html, /<strong>Synthetic<\/strong>/);
+  assert.doesNotMatch(safe.claims[0].text_html, /<script/i);
+  await f.ai.configure({ completionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  const chats = f.calls.filter(c => c.path === "/api/chat").length;
+  await assert.rejects(f.ai.ask({ question: "cache" }), { code: "MODEL_CAPABILITY" });
+  assert.equal(f.calls.filter(c => c.path === "/api/chat").length, chats);
+  await f.ai.configure({ embeddingModel: "synthetic-plumb:latest" });
+  f.ai.startIndex();
+  assert.equal((await finished(f.ai)).error.code, "MODEL_CAPABILITY");
+});
+
+test("decision response keys are strict and small context checks cannot silently omit evidence", async t => {
+  const f = await fixture(t);
+  await f.configure({ decisionModel: "synthetic-plumb:latest" });
+  await index(f.ai);
+  for (const response of [
+    { model: "other-model", answers: { support: {} } },
+    { model: "synthetic-plumb:latest", answers: { support: {}, unexpected: {} } },
+    { model: "synthetic-plumb:latest", answers: {} },
+    { model: "synthetic-plumb:latest", answers: { support: { type: "choice", choice: "other",
+      probabilities: { supported: 0.8, contradicted: 0.1, insufficient: 0.1 } } } },
+  ]) {
+    f.behavior.decisionResponse = response;
+    await assert.rejects(f.ai.ask({ question: "cache" }), { code: "BACKEND_INVALID_RESPONSE" });
+  }
+  f.behavior.decisionResponse = null;
+  const before = f.calls.filter(c => c.path === "/v1/systemone").length;
+  await assert.rejects(f.ai.decide({ question: "cache", token_budget: 128 }), { code: "MODEL_CONTEXT" });
+  assert.equal(f.calls.filter(c => c.path === "/v1/systemone").length, before);
+  for (const body of [{ question: "" }, { question: "cache", extra: true }, { question: "cache", limit: 9 },
+    { question: "cache", repository: 1 }, { question: "cache", token_budget: 127 }]) {
+    await assert.rejects(f.ai.decide(body), { code: "INVALID_INPUT" });
+  }
+});
 
 test("safe defaults, model discovery, validated atomic settings and strictly local endpoints", async t => {
   const f = await fixture(t);
