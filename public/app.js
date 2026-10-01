@@ -175,6 +175,53 @@ function message(label, html, query) {
   return container;
 }
 
+function sessionMetadata(data) {
+  const metadata = node("details", "session-metadata");
+  metadata.append(node("summary", "", `FILES & REFERENCES / ${format.format(data.files.length)} files / ${format.format(data.refs.length)} references`));
+  const groups = new Map();
+  const cwd = (data.session.cwd || "").replaceAll("\\", "/").replace(/\/+$/, "");
+  for (const file of data.files) {
+    const path = (file.file_path || "").replaceAll("\\", "/");
+    const artifact = path.match(/\/\.copilot\/session-state\/[^/]+\/(?:files\/)?(.+)$/);
+    const inWorkspace = cwd && path.startsWith(`${cwd}/`);
+    const relative = !path.startsWith("/") && !/^[A-Za-z]:\//.test(path);
+    const group = artifact ? "Session artifacts" : inWorkspace || relative ? "Workspace files" : "Other locations";
+    let compact = artifact ? artifact[1] : inWorkspace ? path.slice(cwd.length + 1) :
+      path.replace(/^(?:\/Users\/[^/]+|\/home\/[^/]+|[A-Za-z]:\/Users\/[^/]+)(?=\/|$)/, "~");
+    const parts = compact.split("/");
+    if (parts.length > 6) compact = `.../${parts.slice(-6).join("/")}`;
+    const slash = compact.lastIndexOf("/");
+    const entry = node("details", "metadata-file");
+    const summary = node("summary");
+    const label = node("span", "file-label");
+    label.append(node("strong", "", compact.slice(slash + 1) || path),
+      node("span", "file-directory", slash >= 0 ? compact.slice(0, slash) : "Recorded relative path"));
+    summary.append(label, node("span", "file-action", file.tool_name || "file"));
+    entry.append(summary, node("code", "file-full-path", file.file_path || "No path recorded"));
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(entry);
+  }
+  for (const [name, entries] of groups) {
+    const group = node("details", "metadata-group");
+    group.append(node("summary", "", `${name} / ${format.format(entries.length)}`), ...entries);
+    metadata.append(group);
+  }
+  if (data.refs.length) {
+    const refs = node("details", "metadata-group");
+    refs.append(node("summary", "", `References / ${format.format(data.refs.length)}`));
+    const list = node("div", "reference-list");
+    for (const ref of data.refs) {
+      const item = node("div", "reference-item");
+      item.append(node("span", "file-action", ref.ref_type), node("code", "", ref.ref_value));
+      list.append(item);
+    }
+    refs.append(list);
+    metadata.append(refs);
+  }
+  if (data.metadataTruncated) metadata.append(node("p", "session-meta", "Showing the first 1,000 files and references."));
+  return metadata;
+}
+
 function saveScroll() {
   if (page === "dashboard") dashboardScroll = window.scrollY;
   else if (page === "workbench") workbenchScroll = window.scrollY;
@@ -370,11 +417,7 @@ async function loadSession(doc, params, jump = false) {
     }
     content.append(conversation);
     if (data.files.length || data.refs.length) {
-      const metadata = section("FILES & REFERENCES");
-      for (const file of data.files) metadata.append(node("div", "session-meta", `${file.tool_name || "file"} / ${file.file_path}`));
-      for (const ref of data.refs) metadata.append(node("div", "session-meta", `${ref.ref_type} / ${ref.ref_value}`));
-      if (data.metadataTruncated) metadata.append(node("p", "session-meta", "Showing the first 1,000 files and references."));
-      content.append(metadata);
+      content.append(sessionMetadata(data));
     }
     const selected = doc.result.kind === "checkpoint"
       ? [...content.querySelectorAll("[data-checkpoint]")].find(item => item.dataset.checkpoint === doc.result.source_id)

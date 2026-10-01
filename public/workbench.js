@@ -38,6 +38,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
   let built = false;
   let requestVersion = 0;
   let timer;
+  let refreshReadiness = async () => {};
   const status = text => { $("workbench-status").textContent = text; $("workbench-status").hidden = false; };
   const error = problem => {
     console.warn("Ask History failed:", problem.name);
@@ -101,7 +102,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
   };
 
   async function render() {
-    if (built) return;
+    if (built) { refreshReadiness().catch(error); return; }
     built = true;
     const panel = section("ASK YOUR HISTORY / LOCAL MODELS");
     panel.append(node("p", "session-meta",
@@ -119,12 +120,44 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     mode.addEventListener("change", () => { modeHint.hidden = mode.value !== "decision"; });
     const submit = node("button", "", "Ask history");
     submit.type = "submit";
+    submit.disabled = true;
+    let indexReady = false;
+    let asking = false;
+    const readiness = node("p", "session-meta index-readiness", "Checking history index...");
+    readiness.setAttribute("role", "status");
+    const meter = node("progress", "index-progress");
+    meter.setAttribute("aria-label", "History indexing progress");
+    meter.hidden = true;
+    let reflectSettingsIndex = () => {};
+    const refreshIndex = async () => {
+      const state = await api("/api/index");
+      const processed = state.processed || 0;
+      const target = state.target ?? state.total ?? 0;
+      const count = `${format.format(processed)} of ${format.format(target)} source entries`;
+      indexReady = state.state === "complete" && state.indexed > 0 && !state.running;
+      submit.disabled = asking || !indexReady;
+      meter.hidden = !state.running;
+      meter.max = Math.max(1, target);
+      meter.value = Math.min(processed, meter.max);
+      readiness.textContent = state.running
+        ? `${state.state === "cancelling" ? "Stopping indexing" : "Indexing history"}: ${count} (${target ? (processed / target * 100).toFixed(1) : "0.0"}%) / ${format.format(state.reused || 0)} reused chunks. Ask History becomes available when indexing finishes.`
+        : indexReady
+          ? `Index ready: ${format.format(state.indexed)} usable sources.${state.skippedChangedSources ? ` ${format.format(state.skippedChangedSources)} changed sources were excluded; refresh to retry them.` : ""}`
+          : state.error
+            ? `Index stopped after ${count}: ${state.error.message} Open configuration below and refresh to resume saved chunks.`
+            : `Index ${state.state.replaceAll("_", " ")} / ${count}. Open configuration below and refresh; Ask History needs a completed, nonempty index.`;
+      reflectSettingsIndex(state);
+      clearTimeout(timer);
+      if (state.running && !document.hidden && !$("workbench-page").hidden) timer = setTimeout(() => refreshIndex().catch(error), 2000);
+    };
+    refreshReadiness = refreshIndex;
     form.append(field("Question (up to 200 characters / 12 words)", question),
       field("Repository (optional exact name)", repository), field("Response mode", mode), modeHint, submit);
     const answer = node("div", "answer-content");
     form.addEventListener("submit", attempt(async event => {
       event.preventDefault();
       const current = ++requestVersion;
+      asking = true;
       submit.disabled = true;
       answer.replaceChildren(node("p", "session-meta", "Retrieving history and evaluating the evidence locally..."));
       try {
@@ -155,7 +188,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
         }
         answer.append(node("p", "session-meta", result.notice), linkSources(result.citations || []));
       } catch (problem) { if (current === requestVersion) answer.replaceChildren(); throw problem; }
-      finally { if (current === requestVersion) submit.disabled = false; }
+      finally { if (current === requestVersion) { asking = false; submit.disabled = !indexReady; } }
     }));
     const configuration = node("details", "ai-configuration");
     configuration.id = "ai-configuration";
@@ -164,14 +197,12 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     let settingsLoaded = false;
     configuration.append(settingsPanel);
     configuration.addEventListener("toggle", () => {
-      clearTimeout(timer);
       if (configuration.open && !settingsLoaded) {
         settingsLoaded = true;
-        settings(settingsPanel, configuration).catch(problem => { settingsLoaded = false; error(problem); });
+        settings(settingsPanel).catch(problem => { settingsLoaded = false; error(problem); });
       } else if (configuration.open) refreshIndex().catch(error);
     });
-    let refreshIndex = async () => {};
-    async function settings(container, disclosure) {
+    async function settings(container) {
       const config = await api("/api/settings");
       const settingsForm = node("form", "power-form");
       const provider = select("provider", [["ollama", "Ollama"], ["openai", "OpenAI-compatible local chat/embedding server"]], config.provider);
@@ -239,13 +270,10 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
           await refreshIndex();
         } catch (problem) { cancel.disabled = false; throw problem; }
       }, false);
-      refreshIndex = async () => {
-        const state = await api("/api/index");
-        progress.textContent = `${state.state.replaceAll("_", " ")} / ${format.format(state.processed || 0)} processed / ${format.format(state.total || 0)} source entries / ${format.format(state.embedded || 0)} new chunks / ${format.format(state.reused || 0)} reused${state.error ? ` / ${state.error.message}` : ""}`;
+      reflectSettingsIndex = state => {
+        progress.textContent = `${state.state.replaceAll("_", " ")} / ${format.format(state.processed || 0)} processed of ${format.format(state.target ?? state.total ?? 0)} source entries / ${format.format(state.indexed || 0)} usable / ${format.format(state.embedded || 0)} new chunks / ${format.format(state.reused || 0)} reused${state.notice ? ` / ${state.notice}` : ""}${state.error ? ` / ${state.error.message}` : ""}`;
         start.disabled = Boolean(state.running);
         cancel.disabled = !state.running || state.state === "cancelling";
-        clearTimeout(timer);
-        if (state.running && disclosure.open && !document.hidden) timer = setTimeout(() => refreshIndex().catch(error), 2000);
       };
       const actions = node("div", "tool-actions");
       actions.append(start, cancel, button("Refresh index status", refreshIndex));
@@ -255,8 +283,9 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
         settingsForm, indexPanel);
       await refreshIndex();
     }
-    panel.append(form, answer, configuration);
+    panel.append(readiness, meter, form, answer, configuration);
     $("tool-content").replaceChildren(panel);
+    refreshIndex().catch(error);
   }
 
   async function show(configuration = false) {
@@ -315,6 +344,9 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
       palette.showModal();
       query.focus();
     }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !$("workbench-page").hidden) refreshReadiness().catch(error);
   });
   return { show, render };
 }

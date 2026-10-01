@@ -22,7 +22,7 @@ async function fixture(t, provider = "ollama") {
   const calls = [];
   const behavior = { failure: false, badVector: false, answer: "Synthesis: invalidate after successful writes [S1].",
     answers: [], delay: 0, failAt: Infinity, digest: "synthetic-weight-v1", redirect: false, onChat: null,
-    onDecision: null, decisionFailure: false, decisionResponse: null, unknownDecision: false };
+    onDecision: null, onEmbed: null, decisionFailure: false, decisionResponse: null, unknownDecision: false };
   let embeddings = 0;
   const server = createServer(async (req, res) => {
     let text = "";
@@ -49,6 +49,7 @@ async function fixture(t, provider = "ollama") {
       { id: "qwen2.5:3b", capabilities: ["completion"], context_length: 8192 },
     ] });
     if (["/api/embed", "/v1/embeddings"].includes(req.url)) {
+      await behavior.onEmbed?.(body);
       embeddings++;
       if (embeddings >= behavior.failAt) { res.writeHead(503); res.end(); return; }
       if (behavior.delay) await sleep(behavior.delay);
@@ -404,6 +405,66 @@ test("explicit full indexing is bounded, read-only, incremental and detects conf
   assert.equal(reopened.indexStatus().stale, true);
   await index(reopened);
   assert.ok(f.embeddings() > count);
+});
+
+test("a finite metadata snapshot completes despite new history, then refresh reuses chunks and includes additions", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  f.behavior.onEmbed = () => {
+    f.behavior.onEmbed = null;
+    f.write("INSERT INTO turns VALUES (999,'demo-cache',99,'New cache question','New cache answer','2026-01-24 10:00:00');");
+  };
+  const first = await index(f.ai);
+  assert.equal(first.target, 16);
+  assert.equal(first.processed, 16);
+  assert.equal(first.indexed, 16);
+  assert.equal(first.skippedChangedSources, 0);
+  assert.ok(first.snapshotAt);
+  assert.match(first.notice, /new history requires another refresh/);
+  const state = new DatabaseSync(join(f.dataPath, "semantic-index.sqlite"), { readOnly: true });
+  try { assert.equal(state.prepare("SELECT COUNT(*) AS n FROM records WHERE source_id='999'").get().n, 0); }
+  finally { state.close(); }
+  const second = await index(f.ai);
+  assert.equal(second.indexed, 18);
+  assert.equal(second.target, 18);
+  assert.ok(second.reusedChunks > 0);
+});
+
+test("changed and deleted sources are explicitly excluded without aborting unaffected history", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  f.behavior.onEmbed = () => {
+    f.behavior.onEmbed = null;
+    f.write("UPDATE sessions SET summary='A newly changed cache summary.' WHERE id='demo-cache'; DELETE FROM turns WHERE id=13;");
+  };
+  const first = await index(f.ai);
+  assert.equal(first.processed, 16);
+  assert.equal(first.skippedChangedSources, 6);
+  assert.equal(first.indexed, 10);
+  assert.equal(first.truncated, true);
+  assert.match(first.notice, /6 sources changed or disappeared/);
+  const results = await f.ai.hybridSearch(new URLSearchParams({ q: "cache" }));
+  assert.ok(results.results.every(row => row.session_id !== "demo-cache"));
+  assert.equal(results.retrieval.skippedChangedSources, 6);
+  const refreshed = await index(f.ai);
+  assert.equal(refreshed.indexed, 14);
+  assert.equal(refreshed.skippedChangedSources, 0);
+  assert.equal(refreshed.truncated, false);
+});
+
+test("running indexing reports progress rather than telling the user to start it again", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  f.behavior.delay = 5;
+  f.ai.startIndex();
+  await assert.rejects(f.ai.ask({ question: "cache" }), error =>
+    error.code === "INDEX_NOT_READY" && /still running: .*source entries processed.*already been started/.test(error.message));
+  await finished(f.ai);
+  f.behavior.failAt = 1;
+  f.ai.startIndex({ force: true });
+  await finished(f.ai);
+  await assert.rejects(f.ai.ask({ question: "cache" }), error =>
+    error.code === "INDEX_NOT_READY" && /indexing stopped.*Refresh to resume reusable chunks/.test(error.message));
 });
 
 test("hybrid ranking, session grouping, honest pagination and source/repository/date filters", async t => {

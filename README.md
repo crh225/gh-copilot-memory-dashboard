@@ -147,6 +147,9 @@ docker compose down
   dashboard container. Standalone Copilot CLI also supports
   `copilot --resume=SESSION_ID`. The original session state must still exist;
   a history database snapshot alone cannot recreate a resumable session.
+- Files and references are collapsed by default. Files are grouped into workspace
+  paths, session artifacts, and other locations, with readable filenames and
+  compact directories. Expand a file to see its exact recorded path.
 - Search previews, session prompts, responses, and checkpoints render Markdown headings, lists,
   tables, inline code, and syntax-highlighted fenced code blocks. Backtick, tilde,
   and triple-apostrophe fences are supported. Code blocks keep a dark background
@@ -288,7 +291,18 @@ The index is incremental and records embedding model/backend identity. Changed
 models make it stale; refresh after changing weights, and use a forced rebuild
 through `/api/index` with `force:true` for unversioned weight replacements.
 Interrupted jobs can be resumed with another refresh; progress, scope, reused
-chunks and errors are visible. Changing only decision-model settings does not
+chunks and errors are visible. Progress distinguishes processed source entries
+from newly embedded/reused chunks and shows the total target and percentage.
+Ask History stays disabled until a completed, nonempty index is ready.
+
+Each indexing run captures a finite metadata snapshot, so new conversations do
+not extend or invalidate an in-progress job. Sources changed or removed while
+indexing are explicitly counted and excluded; other sources still complete.
+The snapshot timestamp and skipped-source count are reported. Refresh to include
+new history and retry changed sources; unchanged chunks are reused.
+Sources are still revalidated before retrieval or citation.
+
+Changing only decision-model settings does not
 invalidate the embedding index. Search scans indexed chunks and is not intended
 as an enterprise-scale vector database. Missing/stale indices and unavailable
 models produce explicit errors; exact-word search still works independently.

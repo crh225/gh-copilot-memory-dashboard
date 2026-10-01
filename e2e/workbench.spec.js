@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/index", route => route.fulfill({ json: {
+    state: "complete", indexed: 16, processed: 16, total: 16, target: 16, running: false,
+  } }));
+});
+
 const config = { provider: "ollama", endpoint: "http://127.0.0.1:11434",
   decisionEndpoint: "http://127.0.0.1:11434", chatModel: "", embeddingModel: "", decisionModel: "" };
 const citation = { id: "S1", session_id: "demo-cache", source_id: "1", kind: "assistant",
@@ -55,7 +61,7 @@ test("inline configuration discovers role-safe decision models and saves indepen
   ] } }));
   await page.route("**/api/index", route => {
     if (route.request().method() === "POST") indexWrites++;
-    return route.fulfill({ json: { state: "complete", processed: 104, total: 104, embedded: 104, reused: 0 } });
+    return route.fulfill({ json: { state: "complete", indexed: 104, processed: 104, total: 104, embedded: 104, reused: 0 } });
   });
   await page.goto("/workbench");
   await page.getByText("Configure local models & history index", { exact: true }).click();
@@ -178,4 +184,22 @@ test("index controls remain inline, require explicit action, and respect running
   await expect(page.locator("#ai-configuration")).toContainText("cancelled / 4 processed");
   await expect(page.getByRole("button", { name: "Index / refresh history", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Stop indexing", exact: true })).toBeDisabled();
+});
+
+test("Ask History shows total indexing progress while configuration is closed and unlocks after completion", async ({ page }) => {
+  let state = { state: "running", running: true, processed: 15, indexed: 15,
+    target: 15000, total: 15000, embedded: 15, reused: 1 };
+  await page.route("**/api/index", route => route.fulfill({ json: state }));
+  await page.goto("/workbench");
+  await expect(page.locator(".index-readiness")).toContainText("15 of 15,000 source entries (0.1%)");
+  await expect(page.locator(".index-readiness")).toContainText("1 reused chunks");
+  await expect(page.getByRole("button", { name: "Ask history", exact: true })).toBeDisabled();
+  await expect(page.getByRole("progressbar", { name: "History indexing progress" })).toBeVisible();
+  await expect(page.locator("#ai-configuration")).not.toHaveAttribute("open");
+  state = { state: "complete", running: false, processed: 15000, indexed: 14999,
+    target: 15000, total: 15000, skippedChangedSources: 1 };
+  await expect(page.locator(".index-readiness")).toContainText("Index ready: 14,999 usable sources");
+  await expect(page.locator(".index-readiness")).toContainText("1 changed sources were excluded");
+  await expect(page.getByRole("button", { name: "Ask history", exact: true })).toBeEnabled();
+  await expect(page.getByRole("progressbar", { name: "History indexing progress" })).toBeHidden();
 });

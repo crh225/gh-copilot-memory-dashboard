@@ -115,6 +115,22 @@ footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14
 .session-resume button { font-size: 11px; }
 .session-title { font-size: 36px; line-height: 1.15; letter-spacing: -.045em; font-weight: 500; overflow-wrap: anywhere; }
 .session-meta { color: var(--muted); font: 11px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.session-metadata { margin-top: 32px; border-top: 1px solid var(--line); padding: 20px 0; }
+.session-metadata summary { cursor: pointer; font: 11px/1.7 var(--mono); overflow-wrap: anywhere; }
+.metadata-group { margin: 16px 0; }
+.metadata-group > summary { color: var(--muted); margin-bottom: 12px; }
+.metadata-file { padding: 12px; margin: 8px 0; background: var(--surface); border: 1px solid var(--line); }
+.file-label { display: inline-block; vertical-align: top; max-width: calc(100% - 110px); }
+.file-label strong { display: block; font: 500 14px/1.6 var(--sans); overflow-wrap: anywhere; }
+.file-directory { display: block; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+.file-action { color: var(--muted); font: 10px/1.8 var(--mono); overflow-wrap: anywhere; }
+.metadata-file .file-action { float: right; max-width: 90px; text-align: right; }
+.file-full-path { display: block; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font: 11px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.reference-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.reference-item { display: flex; align-items: baseline; gap: 8px; min-width: 0; max-width: 100%; padding: 8px 12px; border: 1px solid var(--line); background: var(--surface); }
+.reference-item code { min-width: 0; font: 11px/1.8 var(--mono); overflow-wrap: anywhere; }
+.index-readiness { margin: 20px 0 8px; }
+.index-progress { display: block; width: min(100%, 900px); height: 8px; accent-color: var(--accent); margin-bottom: 20px; }
 .session-section { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; }
 .session-section h3 { font: 11px var(--mono); letter-spacing: .07em; }
 .message { border: 1px solid var(--line); background: var(--surface); padding: 18px; margin-top: 12px; }
