@@ -352,6 +352,11 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
   let commands = [];
   let cursor = 0;
   let previousFocus;
+  const runCommand = command => {
+    previousFocus = null;
+    palette.close();
+    return command.run();
+  };
   const fillCommands = () => {
     commands = [
       { label: "Search archive", run: () => { navigate("explorer"); $("query").focus(); } },
@@ -362,7 +367,7 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
     ].filter(command => command.label.toLowerCase().includes(query.value.toLowerCase()));
     cursor = Math.min(cursor, Math.max(0, commands.length - 1));
     list.replaceChildren(...commands.map((command, index) => {
-      const item = button(command.label, () => { palette.close(); return command.run(); });
+      const item = button(command.label, () => runCommand(command));
       item.dataset.selected = String(cursor === index);
       return item;
     }));
@@ -377,11 +382,15 @@ export function createWorkbench({ navigate, openSession, getDocuments, markdownB
       list.children[cursor].scrollIntoView({ block: "nearest" });
     } else if (event.key === "Enter" && commands[cursor]) {
       event.preventDefault();
-      palette.close();
-      attempt(commands[cursor].run)();
+      attempt(() => runCommand(commands[cursor]))();
     }
   });
-  palette.addEventListener("close", () => { if (previousFocus?.isConnected) previousFocus.focus(); });
+  palette.addEventListener("close", () => {
+    if (palette.open) return;
+    const target = previousFocus;
+    previousFocus = null;
+    if (target?.isConnected) target.focus();
+  });
   document.addEventListener("keydown", event => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();

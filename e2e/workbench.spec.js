@@ -102,6 +102,39 @@ test("Ask History replaces unused tools and palette entries without disturbing d
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+for (const activation of ["keyboard", "click"]) {
+  test(`palette ${activation} commands retain destination focus after the close event`, async ({ page }) => {
+    await page.goto("/workbench");
+    await page.getByRole("link", { name: "Ask History", exact: true }).focus();
+    await page.keyboard.press("Control+k");
+    await page.getByLabel("Find a command").fill("Search archive");
+    const closed = page.evaluate(() => new Promise(resolve => {
+      document.querySelector(".command-palette").addEventListener("close", () => resolve(), { once: true });
+    }));
+    if (activation === "keyboard") await page.getByLabel("Find a command").press("Enter");
+    else await page.getByRole("dialog", { name: "Command palette" }).getByRole("button", { name: "Search archive", exact: true }).click();
+    await closed;
+    await expect(page.locator("#query")).toBeFocused();
+    await expect(page.locator("#explorer-page")).toBeVisible();
+  });
+}
+
+for (const dismissal of ["Escape", "Control+k"]) {
+  test(`palette dismissal with ${dismissal} restores the previous control`, async ({ page }) => {
+    await page.goto("/workbench");
+    const previous = page.getByLabel("Question", { exact: true });
+    await previous.focus();
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
+    const closed = page.evaluate(() => new Promise(resolve => {
+      document.querySelector(".command-palette").addEventListener("close", () => resolve(), { once: true });
+    }));
+    await page.keyboard.press(dismissal);
+    await closed;
+    await expect(previous).toBeFocused();
+  });
+}
+
 test("inline configuration discovers role-safe decision models and saves independent endpoints", async ({ page }) => {
   let saved;
   let indexWrites = 0;

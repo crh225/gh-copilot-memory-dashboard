@@ -291,7 +291,9 @@ Questions that cannot fit with evidence produce a visible context-size error;
 they are never silently shortened. Explorer's short-search limits remain unchanged.
 
 **Ctrl+K / Cmd+K** opens a searchable command palette for navigation,
-model/index configuration, and currently open documents. Hybrid retrieval remains
+model/index configuration, and currently open documents. Executing a command
+preserves its destination focus; dismissing with Escape or the shortcut restores
+the previously focused control. Hybrid retrieval remains
 available in Explorer after explicit indexing.
 
 ### Configure local AI
