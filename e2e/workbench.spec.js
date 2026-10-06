@@ -22,6 +22,15 @@ const checkedAnswer = {
   citations: [citation], notice: "Local AI synthesis. Check the original sources.",
 };
 
+async function observePaletteClose(page) {
+  const palette = page.locator(".command-palette");
+  await palette.evaluate(dialog => {
+    dialog.dataset.testClose = "pending";
+    dialog.addEventListener("close", () => { dialog.dataset.testClose = "handled"; }, { once: true });
+  });
+  return palette;
+}
+
 test("api visibly searches, supports cancellation and preserves the question for retry", async ({ page }) => {
   let calls = 0;
   await page.route("**/api/ask", route => {
@@ -108,12 +117,10 @@ for (const activation of ["keyboard", "click"]) {
     await page.getByRole("link", { name: "Ask History", exact: true }).focus();
     await page.keyboard.press("Control+k");
     await page.getByLabel("Find a command").fill("Search archive");
-    const closed = page.evaluate(() => new Promise(resolve => {
-      document.querySelector(".command-palette").addEventListener("close", () => resolve(), { once: true });
-    }));
+    const palette = await observePaletteClose(page);
     if (activation === "keyboard") await page.getByLabel("Find a command").press("Enter");
     else await page.getByRole("dialog", { name: "Command palette" }).getByRole("button", { name: "Search archive", exact: true }).click();
-    await closed;
+    await expect(palette).toHaveAttribute("data-test-close", "handled");
     await expect(page.locator("#query")).toBeFocused();
     await expect(page.locator("#explorer-page")).toBeVisible();
   });
@@ -126,11 +133,9 @@ for (const dismissal of ["Escape", "Control+k"]) {
     await previous.focus();
     await page.keyboard.press("Control+k");
     await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
-    const closed = page.evaluate(() => new Promise(resolve => {
-      document.querySelector(".command-palette").addEventListener("close", () => resolve(), { once: true });
-    }));
+    const palette = await observePaletteClose(page);
     await page.keyboard.press(dismissal);
-    await closed;
+    await expect(palette).toHaveAttribute("data-test-close", "handled");
     await expect(previous).toBeFocused();
   });
 }
