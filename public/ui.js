@@ -29,7 +29,7 @@ export function date(value) {
   });
 }
 
-export async function requestJson(path, { body, signal, timeoutMs = 60000, label = "Local request" } = {}) {
+export async function requestJson(path, { body, method = "POST", signal, timeoutMs = 60000, label = "Local request" } = {}) {
   const controller = new AbortController();
   let timedOut = false;
   const cancel = () => controller.abort();
@@ -38,7 +38,7 @@ export async function requestJson(path, { body, signal, timeoutMs = 60000, label
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   try {
     const response = await fetch(path, { cache: "no-store", signal: controller.signal,
-      ...(body === undefined ? {} : { method: "POST", headers: {
+      ...(body === undefined ? {} : { method, headers: {
         "Content-Type": "application/json", "X-Copilot-Memory": "local",
       }, body: JSON.stringify(body) }),
     });
