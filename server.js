@@ -98,14 +98,19 @@ export function createApp({ path = databasePath(),
       const url = new URL(req.url, `http://${host}`);
       const mutations = new Set(["/api/settings", "/api/index", "/api/ask", "/api/decision", "/api/context-pack", "/api/checkpoint-compare", "/api/notebook", "/api/render-markdown"]);
       const noteRoute = url.pathname.match(/^\/api\/notebook\/([a-zA-Z0-9-]{1,100})$/);
+      const sessionDelete = req.method === "DELETE" && url.pathname === "/api/session";
       if (req.method !== "GET") {
         if (!(req.method === "POST" && mutations.has(url.pathname)) &&
-            !(noteRoute && ["PATCH", "DELETE"].includes(req.method))) {
+            !(noteRoute && ["PATCH", "DELETE"].includes(req.method)) && !sessionDelete) {
           throw new AppError(405, "READ_ONLY", "Source history is read-only; this route does not accept writes.");
         }
         const body = await requestBody(req);
         let result;
-        if (url.pathname === "/api/settings") result = await ai().configure(body);
+        if (sessionDelete) {
+          if (body?.confirm !== true) throw new AppError(400, "CONFIRMATION_REQUIRED", "Confirm permanent deletion of this session from Copilot CLI history and the dashboard index.");
+          result = ai().deleteSession(url.searchParams.get("id"));
+        }
+        else if (url.pathname === "/api/settings") result = await ai().configure(body);
         else if (url.pathname === "/api/index") result = ai().startIndex(body);
         else if (url.pathname === "/api/ask") result = await ai().ask(body, { signal: controller.signal });
         else if (url.pathname === "/api/decision") result = await ai().decide(body, { signal: controller.signal });
@@ -178,7 +183,7 @@ export function start({ path = databasePath(), dataPath, aiEndpoint, host = proc
     console.error(`Server failed to start (${error.code}). Check PORT and whether another process is listening.`);
     process.exitCode = 1;
   });
-  server.listen(port, host, () => console.log(`Copilot Memory Dashboard: http://localhost:${port} (read-only, no telemetry)`));
+  server.listen(port, host, () => console.log(`Copilot Memory Dashboard: http://localhost:${port} (read-only browsing, explicit session deletion, no telemetry)`));
   return server;
 }
 

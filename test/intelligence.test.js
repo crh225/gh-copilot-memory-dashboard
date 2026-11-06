@@ -120,6 +120,57 @@ async function index(ai, body = {}) {
   return status;
 }
 
+test("deleted sessions cannot be retrieved or restored by re-indexing", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  const before = await index(f.ai);
+  assert.equal(f.ai.deleteSession("demo-cache").deleted, true);
+  assert.notEqual(f.ai.indexStatus().generation, before.generation);
+  const result = await f.ai.hybridSearch(new URLSearchParams({ q: "cache" }));
+  assert.ok(result.results.every(row => row.session_id !== "demo-cache"));
+  await index(f.ai);
+  const db = new DatabaseSync(join(f.dataPath, "semantic-index.sqlite"), { readOnly: true });
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM records WHERE session_id = 'demo-cache'").get().n, 0);
+  } finally { db.close(); }
+});
+
+test("deletion is blocked until dashboard indexing has stopped", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  f.ai.startIndex();
+  assert.throws(() => f.ai.deleteSession("demo-cache"), { code: "INDEX_BUSY", status: 409 });
+  f.ai.startIndex({ cancel: true });
+  assert.throws(() => f.ai.deleteSession("demo-cache"), { code: "INDEX_BUSY" });
+  await finished(f.ai);
+  assert.equal(f.ai.deleteSession("demo-cache").deleted, true);
+});
+
+test("a session deleted while generating an answer cannot be cited", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  f.behavior.onChat = () => f.ai.deleteSession("demo-cache");
+  await assert.rejects(f.ai.ask({ question: "cache" }), { status: 409 });
+});
+
+test("deletion invalidates an in-flight hybrid search", async t => {
+  const f = await fixture(t);
+  await f.configure();
+  await index(f.ai);
+  const original = DatabaseSync.prototype.prepare;
+  let removed = false;
+  t.mock.method(DatabaseSync.prototype, "prepare", function(sql) {
+    if (!removed && sql.startsWith("SELECT substr(")) {
+      removed = true;
+      setImmediate(() => f.ai.deleteSession("demo-cache"));
+    }
+    return original.call(this, sql);
+  });
+  await assert.rejects(f.ai.hybridSearch(new URLSearchParams({ q: "cache" })), { status: 409 });
+  assert.equal(removed, true);
+});
+
 test("verified retrieval caches source statements and retains exact matching counts", async t => {
   const f = await fixture(t);
   await f.configure();

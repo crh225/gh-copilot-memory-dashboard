@@ -108,7 +108,7 @@ footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14
 .tab-close { display: flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; min-height: 44px; border: 0; background: transparent; padding: 0; color: var(--muted); }
 .tab-close:hover { color: var(--accent); }
 .session-page { padding: 35px 0; min-height: 65vh; }
-.session-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.session-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 15px; }
 .session-heading button { font-size: 11px; background: transparent; }
 .session-resume { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line); background: var(--surface); }
 .session-resume code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--ink); font: 12px/1.6 var(--mono); }

@@ -45,7 +45,7 @@ test("paper-and-ink archive searches, filters, inspects context, and stays local
   page.on("pageerror", error => errors.push(error.message));
   await page.goto("/");
   await expect(page.locator("#stat-sessions")).toHaveText("4");
-  await expect(page.locator("#connection")).toHaveText("LOCAL / READ-ONLY");
+  await expect(page.locator("#connection")).toHaveText("LOCAL / HISTORY");
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(245, 245, 240)");
   await expect(page.locator(".sidebar")).toHaveCount(0);
   await expect(page.locator(".masthead")).toBeVisible();

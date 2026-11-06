@@ -36,6 +36,7 @@ async function loadOverview() {
   for (const [name, value] of Object.entries(data.counts)) $(`stat-${name}`).textContent = format.format(value);
   $("nav-count").textContent = format.format(data.counts.sessions);
   for (const id of ["repository", "dashboard-repository"]) {
+    const selected = $(id).value;
     $(id).replaceChildren(node("option", "", "All repositories"));
     $(id).firstChild.value = "";
     for (const repo of data.repositories) {
@@ -43,8 +44,9 @@ async function loadOverview() {
       option.value = repo;
       $(id).append(option);
     }
+    if (data.repositories.includes(selected)) $(id).value = selected;
   }
-  $("connection").textContent = "LOCAL / READ-ONLY";
+  $("connection").textContent = "LOCAL / HISTORY";
   $("last-activity").textContent = data.lastActivity ? `LAST ACTIVITY / ${date(data.lastActivity)}` : "ARCHIVE IS EMPTY";
 }
 
@@ -118,7 +120,7 @@ async function runSearch({ reset = true } = {}) {
     $("page-info").textContent = `${data.total ? data.offset + 1 : 0}-${Math.min(data.offset + data.limit, data.total)} of ${format.format(data.total)}`;
     $("previous").disabled = data.offset === 0;
     $("next").disabled = data.offset + data.limit >= data.total;
-    $("connection").textContent = "LOCAL / READ-ONLY";
+    $("connection").textContent = "LOCAL / HISTORY";
   } catch (error) {
     if (version !== searchVersion) return;
     $("error").textContent = error.message;
@@ -361,7 +363,33 @@ async function loadSession(doc, params, jump = false) {
     const refresh = node("button", "", "Refresh session");
     refresh.type = "button";
     refresh.addEventListener("click", () => loadSession(doc, doc.params));
-    heading.append(node("div", "eyebrow", "SESSION / DOCUMENT WORKSPACE"), refresh);
+    const remove = node("button", "", "Delete session");
+    remove.type = "button";
+    const deletionError = node("div", "error");
+    deletionError.setAttribute("role", "alert");
+    deletionError.hidden = true;
+    remove.addEventListener("click", async () => {
+      if (!window.confirm("Permanently delete this session from Copilot CLI history and the dashboard search/intelligence index? This cannot be undone.\n\nClose this session in Copilot CLI first; an open CLI can save it again. Session-state artifacts and independent Notebook notes are NOT deleted, so artifacts may still allow /resume. This is not a secure erase of backups or files.")) return;
+      remove.disabled = true;
+      refresh.disabled = true;
+      deletionError.hidden = true;
+      try {
+        await api("/api/session", new URLSearchParams({ id: data.session.id }),
+          { method: "DELETE", body: { confirm: true }, label: "Session deletion" });
+        closeDocument(data.session.id);
+        await loadOverview();
+        await runSearch();
+        workbench.render();
+      } catch (error) {
+        const target = documents.has(data.session.id) ? deletionError : $("error");
+        target.textContent = error.message;
+        target.hidden = false;
+      } finally {
+        remove.disabled = false;
+        refresh.disabled = false;
+      }
+    });
+    heading.append(node("div", "eyebrow", "SESSION / DOCUMENT WORKSPACE"), refresh, remove);
     const resume = node("div", "session-resume");
     if (/^[A-Za-z0-9_.-]{1,200}$/.test(data.session.id)) {
       const command = `gh copilot -- --resume=${data.session.id}`;
@@ -382,7 +410,7 @@ async function loadSession(doc, params, jump = false) {
     } else {
       resume.append(node("p", "session-meta", "This session ID contains shell-special characters. Use /resume inside Copilot CLI and paste the ID directly; the terminal shortcut is unavailable."));
     }
-    content.append(heading, title, resume, node("p", "session-meta",
+    content.append(heading, deletionError, title, resume, node("p", "session-meta",
       "Run on the host machine with GitHub CLI/Copilot installed. Resuming requires the original session state, not just a history snapshot."),
       node("div", "session-meta",
       `${data.session.repository || "Local workspace"}${data.session.branch ? ` / ${data.session.branch}` : ""}\n${data.session.cwd || ""}\n${date(data.session.created_at)}\nSession: ${data.session.id}`));

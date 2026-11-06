@@ -2,7 +2,8 @@
 
 ![Your context. Not forgotten. Project artwork with a bitmap context map.](docs/context-hero.png)
 
-A local web app with **read-only access to GitHub Copilot CLI session history**.
+A local web app with **read-only browsing of GitHub Copilot CLI session history**
+and explicit, confirmed session deletion.
 Search prompts, responses, session summaries, and checkpoints. Filter by repository,
 source, and date, then inspect the original conversation, saved checkpoints, files,
 and references in independently closable document tabs.
@@ -350,6 +351,37 @@ Set `LOCAL_DATA_DIR` to move it; keep it separate from your Copilot source.
 Treat this directory and the Docker state volume as private: embeddings,
 snapshots, and notebook text can expose sensitive information.
 
+### Deleting a session
+
+Open a session and choose **Delete session**. The confirmation explains that
+deletion is permanent: it removes the session, turns, checkpoints, files, refs,
+and optional usage/search rows from the configured Copilot CLI session store,
+plus complete and partial records and chunks from the dashboard intelligence
+index. Ordinary browsing still opens the source read-only; only this operation
+opens it writable. Source and index cleanup share a transaction, so a write
+failure rolls back both. Read-only Docker mounts cannot perform deletion; the
+database directory (including WAL/SHM sidecars) and app state must be writable.
+SQLite does not guarantee crash-atomic commits across attached WAL databases:
+after a host/process crash, refresh the index to remove any orphaned entries.
+Retrieval still revalidates citations against the source store.
+
+Close the session in Copilot CLI first. The dashboard cannot reliably detect an
+open CLI session, and an active CLI can save the session again. Deletion is blocked
+while dashboard indexing runs (cancel it and wait for it to stop), or while SQLite
+reports a locked store/index. New searches and generated answers cannot cite the
+deleted session; refresh other open dashboard windows to discard old results.
+
+**Session-state artifacts under `~/.copilot/session-state/SESSION_ID/` and
+independent Notebook notes are retained.** CLI history is removed, but retained
+artifacts may still allow `/resume`; remove those separately if needed. Deletion
+is not a forensic secure erase and does not remove backups, exported content, or
+copies already held by a local model server.
+
+The API is `DELETE /api/session?id=SESSION_ID`, with JSON body `{"confirm":true}`
+and both `Content-Type: application/json` and `X-Copilot-Memory: local`.
+No other route can write source history, and the MCP adapter does not expose
+session deletion.
+
 ### Read-only MCP integration
 
 With the dashboard running, start the stdio adapter using **Node.js 24+**:
@@ -425,9 +457,10 @@ local backend rather than weakening CORS or exposing the port to the network.
 local dashboard; the app does not redact them. Avoid screen sharing it, exposing
 it through a tunnel, or running it on a shared server.
 
-The app opens the source SQLite database read-only, sends no telemetry, calls no
+The app opens the source SQLite database read-only for browsing, sends no telemetry, calls no
 cloud AI services, and uses no GitHub credentials. Local annotations/settings and
-the optional index are writable only in separate app state. Explicit AI actions
+the optional index are writable in separate app state. Only explicit session deletion
+opens a short-lived writable source connection. Explicit AI actions
 call your selected local model server. State-changing and generation requests
 require a custom local JSON header; cross-origin requests remain blocked. Responses are
 marked `no-store`, cross-origin reads and non-loopback Host headers are rejected,
