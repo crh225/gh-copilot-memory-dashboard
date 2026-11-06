@@ -19,7 +19,7 @@ test("session deletion requires confirmation, reports errors, and closes only th
     const data = await response.json();
     if (deleted) {
       data.results = data.results.filter(row => row.session_id !== "demo-cache");
-      data.total = 3;
+      data.total--;
     }
     await route.fulfill({ json: data });
   });
@@ -32,6 +32,7 @@ test("session deletion requires confirmation, reports errors, and closes only th
   await page.goto("/#session=demo-layout");
   await expect(page.getByRole("heading", { name: "Making the archive feel like a notebook.", exact: true })).toBeVisible();
   await page.locator("#explorer-link").click();
+  await page.locator("#repository").selectOption("example/widget-api");
   await page.getByRole("button", { name: "A cache that knows when to let go.", exact: true }).click();
   const remove = page.getByRole("button", { name: "Delete session", exact: true });
   page.once("dialog", async dialog => {
@@ -53,6 +54,7 @@ test("session deletion requires confirmation, reports errors, and closes only th
   await expect(page.getByRole("tab", { name: "A cache that knows when to let go.", exact: true, includeHidden: true })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Making the archive feel like a notebook.", exact: true, includeHidden: true })).toHaveCount(1);
   await expect(page.locator("#nav-count")).toHaveText("3");
+  await expect(page.locator("#repository")).toHaveValue("example/widget-api");
   await expect(page.locator("#results").getByRole("button", { name: "A cache that knows when to let go.", exact: true })).toHaveCount(0);
   expect(attempts).toBe(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
